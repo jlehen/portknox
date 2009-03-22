@@ -4,7 +4,6 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <assert.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -15,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include "conf.h"
 #include "faststring.h"
 #include "util.h"
 
@@ -23,19 +23,6 @@
 #endif
 
 #define	TIMEOUT_WHEEL_SIZE	5
-
-struct janitor {
-	struct janitor *next;
-	int line;
-	char *ip;			
-	char *port;
-	char *proto;
-	int timeout;
-	int sock;
-	char *add;
-	char *delete;
-	struct addrinfo *addrinfo;
-};
 
 struct task {
 	struct task *next;
@@ -155,7 +142,7 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	while (1) {
 		if (cur == NULL)
 			break;
-		if (task->tick < cur->tick)
+		if (cur->tick > task->tick)
 			break;
 		last = cur;
 		cur = cur->next;
@@ -201,49 +188,6 @@ tick()
 }
 
 void
-await(struct janitor *janitor)
-{
-	int s, error;
-	struct addrinfo hints, *ai;
-
-	hints.ai_family = AF_INET;
-	if (!strcmp(janitor->proto, "tcp"))
-		hints.ai_socktype = SOCK_STREAM;
-	else if (!strcmp(janitor->proto, "udp"))
-		hints.ai_socktype = SOCK_DGRAM;
-	else
-		errx(1, "%s: Unknown protocol", janitor->proto);
-	hints.ai_protocol = 0;
-	hints.ai_flags = /*AI_ADDRCONFIG|*/AI_PASSIVE|AI_NUMERICHOST|AI_NUMERICSERV;
-	hints.ai_addrlen = 0;
-	hints.ai_addr = NULL;
-	hints.ai_canonname = NULL;
-	hints.ai_next = NULL;
-	error = getaddrinfo(janitor->ip, janitor->port, &hints, &ai);
-	if (error != 0)
-		errx(1, "%s:%s/%s: %s", janitor->ip, janitor->port,
-		    janitor->proto, gai_strerror(error));
-	assert(ai->ai_next == NULL);
-	janitor->addrinfo = ai;
-
-	s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-	if (s == -1)
-		err(2, "socket");
-	if (!strcmp(janitor->proto, "tcp")) {
-		error = 1;
-		if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &error,
-		    sizeof (error)) == -1)
-			err(2, "setsockopt");
-	}
-	if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
-		err(2, "bind");
-	if (!strcmp(janitor->proto, "tcp"))
-		if (listen(s, 5) == -1)
-			err(2, "listen");
-	janitor->sock = s;
-}
-
-void
 tend(struct janitor *janitor)
 {
 	struct sockaddr_in sin;
@@ -251,6 +195,7 @@ tend(struct janitor *janitor)
 	int i, error;
 	char buf[1], ip[NI_MAXHOST];
 	char *cmd;
+	struct action *action;
 
 	fprintf(stderr, "DEBUG: activity on janitor %p\n", janitor);
 	sinlen = sizeof (sin);
@@ -281,150 +226,13 @@ tend(struct janitor *janitor)
 		return;
 	}
 
-	cmd = expand(janitor->delete, ip);
-	fprintf(stderr, "DEBUG: Exec DELETE: %s\n", cmd);
-	schedule(janitor->timeout + 1, run, cmd);
-	cmd = expand(janitor->add, ip);
-	fprintf(stderr, "DEBUG: Exec ADD: %s\n", cmd);
-	run(cmd);
-}
-
-int
-read_conf(const char *filename, struct janitor **jlist)
-{
-#define	EAT_BLANKS(p)	    do { while (isblank(*p)) { p++; } } while (0)
-	FILE *f;
-	char line[1024];
-	char *linep, *linep2;
-	struct janitor *prev, *cur;
-	int linecount, jcount;
-	char timeoutunit;
-
-	/*
-	 * Memory allocation in this routine is not checked.  It shouldn't
-	 * fail since we're in the beginning of the program.
-	 */
-
-	f = fopen(filename, "r");
-	if (f == NULL)
-		err(1, "%s", filename);
-	*jlist = prev = cur = NULL;
-	linecount = 0;
-	jcount = 0;
-	while (1) {
-		linecount++;
-		if (fgets(line, sizeof (line), f) == NULL) {
-			if (ferror(f))
-				err(1, "%s", filename);
-			break;
-		}
-		linep = line;
-		while (*linep != '\n')
-			linep++;
-		*linep = '\0';
-		linep = line;
-
-		EAT_BLANKS(linep);
-		if (*linep == '\0' || *linep == '#')
-			continue;
-		if (!strncmp(linep, "ADD:", 4)) {
-			if (cur == NULL || cur->add != NULL)
-				errx(1, "%s(%d): unexpected \"ADD\"",
-				    filename, linecount);
-			linep += 4;
-			EAT_BLANKS(linep);
-			cur->add = strdup(linep);
-			fprintf(stderr, "DEBUG:    ADD: '%s'\n", cur->add);
-			continue;
-		}
-		if (!strncmp(linep, "DELETE:", 7)) {
-			if (cur == NULL || cur->delete != NULL)
-				errx(1, "%s(%d): unexpected \"DELETE\"",
-				    filename, linecount);
-			linep += 7;
-			EAT_BLANKS(linep);
-			cur->delete = strdup(linep);
-			fprintf(stderr, "DEBUG:    DELETE: '%s'\n", cur->delete);
-			continue;
-		}
-
-		/* New janitor. */
-
-		if (cur != NULL) {
-			if (cur->add == NULL)
-				errx(1, "%s(%d): missing ADD", filename,
-				    linecount);
-			if (cur->delete == NULL)
-				errx(1, "%s(%d): missing DELETE", filename,
-				    linecount);
-		}
-
-		cur = mymalloc(sizeof (*cur), "struct janitor");
-		cur->add = cur->delete = NULL;
-		cur->next = NULL;
-		jcount++;
-
-		linep2 = strchr(linep, ':');
-		if (linep2 == NULL)
-			errx(1, "%s(%d): \"ip:port/proto timeout\" expected",
-			    filename, linecount);
-		*linep2 = '\0';
-		cur->ip = strdup(linep);
-		linep = linep2 + 1;
-
-		linep2 = strchr(linep, '/');
-		if (linep2 == NULL)
-			errx(1, "%s(%d): \"ip:port/proto timeout\" expected",
-			    filename, linecount);
-		*linep2 = '\0';
-		cur->port = strdup(linep);
-		linep = linep2 + 1;
-
-		linep2 = strpbrk(linep, " \t");
-		if (linep2 == NULL)
-			errx(1, "%s(%d): \"ip:port/proto timeout\" expected",
-			    filename, linecount);
-		*linep2 = '\0';
-		cur->proto = strdup(linep);
-		linep = linep2 + 1;
-		EAT_BLANKS(linep);
-
-		linep2 = strpbrk(linep, " \tsmhdw"); /* Can't return NULL */
-		if (linep2 == NULL)
-			errx(1, "%s(%d): \"ip:port/proto timeout\" expected",
-			    filename, linecount);
-		timeoutunit = *linep2;
-		*linep2 = '\0';
-		cur->timeout = (int)strtol(linep, NULL, 10);
-		if ((cur->timeout == 0 && errno == EINVAL) ||
-		    ((cur->timeout == LONG_MIN || cur->timeout == LONG_MAX) &&
-		    errno == ERANGE))
-			err(1, "%s(%d): bad timeout", filename, linecount);
-		switch (timeoutunit) {
-		case 'w':
-			cur->timeout *= 7;
-		case 'd':
-			cur->timeout *= 24;
-		case 'h':
-			cur->timeout *= 60;
-		case 'm':
-			cur->timeout *= 60;
-		}
-
-		await(cur);
-		fprintf(stderr, "DEBUG: new janitor %p on fd %d (%s:%s/%s)\n",
-		    cur, cur->sock, cur->ip, cur->port, cur->proto);
-
-		if (*jlist == NULL) {
-			*jlist = prev = cur;
-			continue;
-		}
-		prev->next = cur;
-		prev = cur;
+	for (action = janitor->actions; action != NULL; action = action->next) {
+		cmd = expand(action->cmd, ip);
+		if (action->timeout == 0)
+			run(cmd);
+		else
+			schedule(action->timeout + 1, run, cmd);
 	}
-	fclose(f);
-	return jcount;
-#undef EAT_BLANKS
 }
 
 int
@@ -433,6 +241,7 @@ main(int ac, char *av[])
 	struct sigaction sa;
 	struct janitor *jlist, *jp, *jpnext;
 	struct task *nexttask, *curtask;
+	struct action *nextaction, *curaction;
 	sigset_t sigset;
 	int jcount, i, fdmax;
 	fd_set fds_, fds;
@@ -505,8 +314,12 @@ main(int ac, char *av[])
 		myfree(jp->ip);
 		myfree(jp->port);
 		myfree(jp->proto);
-		myfree(jp->add);
-		myfree(jp->delete);
+		for (curaction = jp->actions; curaction != NULL;
+		    curaction = nextaction) {
+			nextaction = curaction->next;
+			myfree(curaction->cmd);
+			myfree(curaction);
+		}
 		/*
 		myfree(jp->addrinfo->ai_addr);
 		myfree(jp->addrinfo->ai_canonname);
