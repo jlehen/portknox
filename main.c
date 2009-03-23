@@ -160,30 +160,26 @@ schedule(int timeout, void (*func)(void *), void *arg)
 void
 tick()
 {
-	struct task *task, *nexttask;
+	struct task *prevtask, *task;
 	int slot;
 
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	task = timeout_wheel[slot];
-	nexttask = task == NULL ? NULL : task->next;
-	/*
-	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p, second task %p\n", curtick, slot, task, nexttask);
-	*/
-	while (nexttask != NULL) {
-		nexttask = task->next;
+	prevtask = NULL;
+	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, task);
+	while (task != NULL) {
 		if (task->tick > curtick)
 			break;
-		task = nexttask;
-	}
-	/*
-	fprintf(stderr, "DEBUG: alarm, task %p, next task %p\n", task, nexttask);
-	*/
-	if (task != NULL) {
-		task->next = NULL;
-		tasks_todo = timeout_wheel[slot];
-		timeout_wheel[slot] = nexttask;
+		prevtask = task;
+		task = task->next;
 	}
 	curtick++;
+	fprintf(stderr, "DEBUG: alarm, prev task %p, next task %p\n", prevtask, task);
+	if (prevtask != NULL) {
+		prevtask->next = NULL;
+		tasks_todo = timeout_wheel[slot];
+		timeout_wheel[slot] = task;
+	}
 	alarm(1);
 }
 
