@@ -1,0 +1,6 @@
+2009/03/23  0.9.1
+	- Let each janitor have 1 to N actions with their own timeout.
+	- Fix various bugs.
+
+2009/03/22  0.9
+	- First draft.
