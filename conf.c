@@ -1,3 +1,5 @@
+#define _ISOC99_SOURCE
+#define _BSD_SOURCE
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <assert.h>
@@ -63,7 +65,7 @@ get_action(struct janitor *janitor, char *linep, const char *filename,
 {
 	char *p;
 	char timeoutunit;
-	struct action *action, *cur, *prev;
+	struct action *action, *ap;
 	int timeout, i;
 
 	if (janitor == NULL)
@@ -114,26 +116,15 @@ get_action(struct janitor *janitor, char *linep, const char *filename,
 	action = mymalloc(sizeof (*action), "struct action");
 	action->timeout = timeout;
 	action->cmd = strdup(p);
+	action->next = NULL;
 
-	action->next = janitor->actions;
-	janitor->actions = action;
-	return;
-
-	/* Sort action by timeout: useless */
-	cur = janitor->actions;
-	prev = NULL;
-	while (1) {
-		if (cur == NULL)
-			break;
-		if (cur->timeout < action->timeout)
-		prev = cur;
-		cur = cur->next;
-	}
-	if (prev == NULL)
+	if (janitor->actions == NULL)
 		janitor->actions = action;
-	else
-		prev->next = action;
-	action->next = cur;
+	else {
+		for (ap = janitor->actions; ap->next != NULL; ap = ap->next)
+			;
+		ap->next = action;
+	}
 }
 
 int
