@@ -8,11 +8,27 @@
 #include <errno.h>
 #include <limits.h>
 #include <netdb.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util.h"
 #include "conf.h"
+
+static int linecount;
+const char *filename;
+
+static void
+syntaxerr(int status, const char *fmt, ...)
+{
+	va_list ap;
+	char *msg;
+
+	va_start(ap, fmt);
+	if (vasprintf(&msg, fmt, ap) == -1)
+		err(status, "%s(%d): %s", filename, linecount, fmt);
+	err(status, "%s(%d): %s", filename, linecount, msg);
+}
 
 static void
 await(struct janitor *janitor)
@@ -60,8 +76,7 @@ await(struct janitor *janitor)
 #define	EAT_BLANKS(p)	    do { while (isblank(*p)) { p++; } } while (0)
 
 static void
-get_action(struct janitor *janitor, char *linep, const char *filename,
-    int linecount)
+get_action(struct janitor *janitor, char *linep)
 {
 	char *p;
 	char timeoutunit;
@@ -69,36 +84,31 @@ get_action(struct janitor *janitor, char *linep, const char *filename,
 	int timeout, i;
 
 	if (janitor == NULL)
-		errx(1, "%s(%d): Unexpected action without janitor",
-		    filename, linecount);
+		syntaxerr(1, "Unexpected action without janitor");
 
 	i = strspn(linep, "012356789");
 	if (i == 0)
-		errx(1, "%s(%d): Format expected \"<tab>timeout: action\"\n"
-		    "    with timeout: <integer><'s'|'m'|'h'|'d'|'w'>",
-		    filename, linecount);
+		syntaxerr(1, "Format expected \"<tab>timeout: action\"\n"
+		    "    with timeout: <integer><'s'|'m'|'h'|'d'|'w'>");
 	p = linep + i;
 	switch (*p) {
 	case 's': case 'm': case 'h': case 'd': case 'w':
 		break;
 	default:
-		errx(1, "%s(%d): Format expected \"<tab>timeout: action\"\n"
-		    "    with timeout: <integer><'s'|'m'|'h'|'d'|'w'>",
-		    filename, linecount);
+		syntaxerr(1, "Format expected \"<tab>timeout: action\"\n"
+		    "    with timeout: <integer><'s'|'m'|'h'|'d'|'w'>");
 	}
 
 	timeoutunit = *p;
 	*p++ = '\0';
 	if (*p++ != ':')
-		errx(1, "%s(%d): \"<tab>timeout: action\" "
-		    "expected", filename, linecount);
+		syntaxerr(1, "\"<tab>timeout: action\" expected");
 
 	timeout = (int)strtol(linep, NULL, 10);
 	if ((timeout == 0 && errno == EINVAL) ||
 	    ((timeout == LONG_MIN || timeout == LONG_MAX) &&
 	    errno == ERANGE))
-		err(1, "%s(%d): bad timeout", filename,
-		    linecount);
+		syntaxerr(1, "bad timeout");
 
 	switch (timeoutunit) {
 	case 'w':
@@ -134,7 +144,7 @@ read_conf(const char *filename, struct janitor **jlist)
 	char line[1024];
 	char *linep, *linep2;
 	struct janitor *prev, *cur;
-	int linecount, jcount;
+	int jcount;
 
 	/*
 	 * Memory allocation in this routine is not checked.  It shouldn't
@@ -162,7 +172,7 @@ read_conf(const char *filename, struct janitor **jlist)
 
 		if (*linep == '\t') {
 			linep++;
-			get_action(cur, linep, filename, linecount);
+			get_action(cur, linep);
 			continue;
 		}
 
@@ -174,7 +184,7 @@ read_conf(const char *filename, struct janitor **jlist)
 		 */
 
 		if (cur != NULL && cur->actions == NULL)
-			errx(1, "%s(%d): missing actions", filename, linecount);
+			syntaxerr(1, "Janitor with no actions");
 
 		cur = mymalloc(sizeof (*cur), "struct janitor");
 		cur->actions = NULL;
@@ -183,16 +193,14 @@ read_conf(const char *filename, struct janitor **jlist)
 
 		linep2 = strchr(linep, ':');
 		if (linep2 == NULL)
-			errx(1, "%s(%d): \"ip:port/proto\" expected",
-			    filename, linecount);
+			syntaxerr(1, "\"ip:port/proto\" expected");
 		*linep2 = '\0';
 		cur->ip = strdup(linep);
 		linep = linep2 + 1;
 
 		linep2 = strchr(linep, '/');
 		if (linep2 == NULL)
-			errx(1, "%s(%d): \"ip:port/proto\" expected",
-			    filename, linecount);
+			syntaxerr(1, "\"ip:port/proto\" expected");
 		*linep2 = '\0';
 		cur->port = strdup(linep);
 		linep = linep2 + 1;
