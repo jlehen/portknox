@@ -1,5 +1,6 @@
 #define _ISOC99_SOURCE
 #define _BSD_SOURCE
+#define _GNU_SOURCE
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <assert.h>
@@ -26,7 +27,7 @@ syntaxerr(int status, const char *fmt, ...)
 
 	va_start(ap, fmt);
 	if (vasprintf(&msg, fmt, ap) == -1)
-		err(status, "%s(%d): %s", filename, linecount, fmt);
+		errx(status, "%s(%d): %s", filename, linecount, fmt);
 	err(status, "%s(%d): %s", filename, linecount, msg);
 }
 
@@ -74,58 +75,72 @@ await(struct janitor *janitor)
 }
 
 #define	EAT_BLANKS(p)	    do { while (isblank(*p)) { p++; } } while (0)
+#define	JANITOR_FORMAT	    "<ip>/<port>:<proto> <max>/<interval>"
+#define	ACTION_FORMAT	    "<TAB><timeout>: <action>"
+#define TIMESPAN_FORMAT	    "<integer><'s'|'m'|'h'|'d'|'w'>"
 
-static void
-get_action(struct janitor *janitor, char *linep)
+static int
+parse_timespan(char **linepp)
 {
+	int i;
+	long n;
 	char *p;
-	char timeoutunit;
-	struct action *action, *ap;
-	int timeout, i;
+	char unit;
 
-	if (janitor == NULL)
-		syntaxerr(1, "Unexpected action without janitor");
-
-	i = strspn(linep, "012356789");
+	i = strspn(*linepp, "012356789");
 	if (i == 0)
-		syntaxerr(1, "Format expected \"<tab>timeout: action\"\n"
-		    "    with timeout: <integer><'s'|'m'|'h'|'d'|'w'>");
-	p = linep + i;
+		return -1;
+	p = *linepp + i;
 	switch (*p) {
 	case 's': case 'm': case 'h': case 'd': case 'w':
 		break;
 	default:
-		syntaxerr(1, "Format expected \"<tab>timeout: action\"\n"
-		    "    with timeout: <integer><'s'|'m'|'h'|'d'|'w'>");
+		return -1;
 	}
 
-	timeoutunit = *p;
-	*p++ = '\0';
-	if (*p++ != ':')
-		syntaxerr(1, "\"<tab>timeout: action\" expected");
+	unit = *p;
+	*p = '\0';
 
-	timeout = (int)strtol(linep, NULL, 10);
-	if ((timeout == 0 && errno == EINVAL) ||
-	    ((timeout == LONG_MIN || timeout == LONG_MAX) &&
-	    errno == ERANGE))
-		syntaxerr(1, "bad timeout");
+	n = strtol(*linepp, NULL, 10);
+	if ((n == 0 && errno == EINVAL) || n < 0 ||
+	    (n == LONG_MAX && errno == ERANGE))
+		return -1;
 
-	switch (timeoutunit) {
+	switch (unit) {
 	case 'w':
-		timeout *= 7;
+		n *= 7;
 	case 'd':
-		timeout *= 24;
+		n *= 24;
 	case 'h':
-		timeout *= 60;
+		n *= 60;
 	case 'm':
-		timeout *= 60;
+		n *= 60;
 	}
 
-	EAT_BLANKS(p);
+	*linepp = p + 1;
+	return (int)n;
+}
+
+static void
+get_action(struct janitor *janitor, char *linep)
+{
+	struct action *action, *ap;
+	int timeout;
+
+	if (janitor == NULL)
+		syntaxerr(1, "Unexpected action without janitor");
+
+	timeout = parse_timespan(&linep);
+	fprintf(stderr, "DEBUG: timeout %d, *linep: %s\n", timeout, linep);
+	if (timeout == -1 || *linep != ':')
+		syntaxerr(1, "Format expected: \"" ACTION_FORMAT "\"\n"
+		    "    with timeout: " TIMESPAN_FORMAT);
+	linep++;
+	EAT_BLANKS(linep);
 
 	action = mymalloc(sizeof (*action), "struct action");
 	action->timeout = timeout;
-	action->cmd = strdup(p);
+	action->cmd = strdup(linep);
 	action->next = NULL;
 
 	if (janitor->actions == NULL)
@@ -144,12 +159,8 @@ read_conf(const char *filename, struct janitor **jlist)
 	char line[1024];
 	char *linep, *linep2;
 	struct janitor *prev, *cur;
-	int jcount;
-
-	/*
-	 * Memory allocation in this routine is not checked.  It shouldn't
-	 * fail since we're in the beginning of the program.
-	 */
+	int i, jcount;
+	long n;
 
 	f = fopen(filename, "r");
 	if (f == NULL)
@@ -193,19 +204,53 @@ read_conf(const char *filename, struct janitor **jlist)
 
 		linep2 = strchr(linep, ':');
 		if (linep2 == NULL)
-			syntaxerr(1, "\"ip:port/proto\" expected");
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 		*linep2 = '\0';
 		cur->ip = strdup(linep);
 		linep = linep2 + 1;
 
 		linep2 = strchr(linep, '/');
 		if (linep2 == NULL)
-			syntaxerr(1, "\"ip:port/proto\" expected");
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 		*linep2 = '\0';
 		cur->port = strdup(linep);
 		linep = linep2 + 1;
 
+		linep2 = strpbrk(linep, " \t");
+		if (linep2 == NULL)
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+		*linep2 = '\0';
 		cur->proto = strdup(linep);
+		linep = linep2 + 1;
+
+		EAT_BLANKS(linep);
+
+		i = strspn(linep, "0123456789");
+		if (i == 0)
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+		linep2 = linep + i;
+		if (*linep2 != '/')
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+		*linep2 = '\0';
+		n = strtol(linep, NULL, 10);
+		if ((n == 0 && errno == EINVAL) || n < 0 ||
+		    (n == LONG_MAX && errno == ERANGE))
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+		cur->usmax = n;
+		linep = linep2 + 1;
+
+		cur->uswheelsz = parse_timespan(&linep);
+		if (cur->uswheelsz == -1)
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+		EAT_BLANKS(linep);
+		if (*linep != '\0')
+			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+
+		cur->uswheel = mymalloc(cur->uswheelsz *
+		    sizeof (*cur->uswheel), "usage wheel");
+		for (i = 0; i < cur->uswheelsz; i++)
+			cur->uswheel[i] = 0;
+		cur->uscur = 0;
 
 		await(cur);
 		fprintf(stderr, "DEBUG: new janitor %p on fd %d (%s:%s/%s)\n",

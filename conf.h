@@ -16,6 +16,12 @@ struct janitor {
 	int sock;
 	struct addrinfo *addrinfo;
 	struct action *actions;
+
+	/* Usage wheel. */
+	short *uswheel;
+	int uswheelsz;
+	int usmax;
+	int uscur;
 };
 
 extern int read_conf(const char *, struct janitor **);
