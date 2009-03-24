@@ -15,7 +15,7 @@ mymalloc(size_t size, const char *desc)
 	res = malloc(size);
 	if (res == NULL)
 		err(2, "Cannot allocate %s (%zu bytes)", desc, size);
-	fprintf(stderr, "DEBUG: alloc %03zu bytes: %p (%s)\n", size, res, desc);
+	fprintf(stderr, "DEBUG: alloc %4zu bytes: %p (%s)\n", size, res, desc);
 	return res;
 }
 
