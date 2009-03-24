@@ -36,6 +36,7 @@ static struct task *timeout_wheel[TIMEOUT_WHEEL_SIZE];
 static struct task *tasks_todo;
 static unsigned int curtick;
 static int mustquit = 0;
+static sigset_t alrm_sigset;
 
 void
 quit(int s __attribute__ ((unused)))
@@ -137,6 +138,8 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	/*
 	fprintf(stderr, "DEBUG: schedule task, tick %d, timeout %d, expire %d, slot %d\n", curtick, timeout, task->tick, slot);
 	*/
+	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
+
 	cur = timeout_wheel[slot];
 	last = NULL;
 	while (1) {
@@ -155,14 +158,23 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	else
 		last->next = task;
 	task->next = cur;
+
+	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 }
 
 void
 tick()
 {
 	struct task *prevtask, *task;
+	struct janitor *jp;
 	int slot;
 
+	alarm(1);
+	curtick++;
+
+	/*
+	 * Extract actions to perform on this tick.
+	 */
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	task = timeout_wheel[slot];
 	prevtask = NULL;
@@ -173,14 +185,25 @@ tick()
 		prevtask = task;
 		task = task->next;
 	}
-	curtick++;
 	fprintf(stderr, "DEBUG: alarm, prev task %p, next task %p\n", prevtask, task);
 	if (prevtask != NULL) {
 		prevtask->next = NULL;
 		tasks_todo = timeout_wheel[slot];
 		timeout_wheel[slot] = task;
 	}
-	alarm(1);
+
+	/*
+	 * Rotate janitor's usage wheel.
+	 */
+	for (jp = janitors; jp != NULL; jp = jp->next) {
+		slot = curtick % jp->uswheelsz;
+
+		jp->uscur -= jp->uswheel[slot];
+		jp->uswheel[slot] = 0;
+		fprintf(stderr, "DEBUG: alarm, janitor %p, usage slot %d emptied, total usage: %d\n",
+		    jp, slot, jp->uscur);
+	}
+
 }
 
 void
@@ -188,11 +211,14 @@ tend(struct janitor *janitor)
 {
 	struct sockaddr_in sin;
 	socklen_t sinlen;
-	int i, error;
+	int i, slot, error;
 	char buf[1], ip[NI_MAXHOST];
 	char *cmd;
 	struct action *action;
 
+	/*
+	 * Get IP address.
+	 */
 	fprintf(stderr, "DEBUG: activity on janitor %p\n", janitor);
 	sinlen = sizeof (sin);
 	if (janitor->addrinfo->ai_protocol == IPPROTO_TCP) {
@@ -222,6 +248,24 @@ tend(struct janitor *janitor)
 		return;
 	}
 
+	/*
+	 * Check max usage.
+	 */
+	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
+	slot = curtick % janitor->uswheelsz;
+	if (janitor->uscur == janitor->usmax) {
+		warnx("Max usage reached, can't fulfill request from %s", ip);
+		return;
+	}
+	janitor->uswheel[slot]++;
+	janitor->uscur++;
+	fprintf(stderr, "DEBUG: current usage slot %d: %d, total usage: %d/%d\n",
+		slot, janitor->uswheel[slot], janitor->uscur, janitor->usmax);
+	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
+
+	/*
+	 * Perform and schedule actions.
+	 */
 	for (action = janitor->actions; action != NULL; action = action->next) {
 		cmd = expand(action->cmd, ip);
 		if (action->timeout == 0)
@@ -235,10 +279,9 @@ int
 main(int ac, char *av[])
 {
 	struct sigaction sa;
-	struct janitor *jlist, *jp, *jpnext;
+	struct janitor *jp, *jpnext;
 	struct task *nexttask, *curtask;
 	struct action *nextaction, *curaction;
-	sigset_t sigset;
 	int jcount, i, fdmax;
 	fd_set fds_, fds;
 
@@ -248,15 +291,16 @@ main(int ac, char *av[])
 	if (sigaction(SIGQUIT, &sa, NULL) == -1)
 		err(2, "sigaction");
 
-	jcount = read_conf("portknox.conf", &jlist);
-	janitors = jlist;
+	jcount = read_conf("portknox.conf", &janitors);
 
-	/* Sockets. */
 	fdmax = 0;
-	for (jp = jlist; jp != NULL; jp = jp->next) {
+	for (jp = janitors; jp != NULL; jp = jp->next) {
 		if (jp->sock > fdmax)
 			fdmax = jp->sock;
 	}
+
+	sigemptyset(&alrm_sigset);
+	sigaddset(&alrm_sigset, SIGALRM);
 
 	/* Timeout wheel. */
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++)
@@ -272,13 +316,12 @@ main(int ac, char *av[])
 
 	/* Main loop. */
 	FD_ZERO(&fds_);
-	for (jp = jlist; jp != NULL; jp = jp->next)
+	for (jp = janitors; jp != NULL; jp = jp->next)
 		FD_SET(jp->sock, &fds_);
-	sigemptyset(&sigset);
-	sigaddset(&sigset, SIGALRM);
+
 	while (!mustquit) {
 		/* Handle callouts. */
-		sigprocmask(SIG_BLOCK, &sigset, NULL);
+		sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 		curtask = tasks_todo;
 		while (curtask != NULL) {
 			nexttask = curtask->next;
@@ -287,7 +330,7 @@ main(int ac, char *av[])
 			curtask = nexttask;
 		}
 		tasks_todo = NULL;
-		sigprocmask(SIG_UNBLOCK, &sigset, NULL);
+		sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 
 		fds = fds_;
 		i = select(fdmax + 1, &fds, NULL, NULL, NULL);
@@ -296,7 +339,7 @@ main(int ac, char *av[])
 				continue;
 			err(2, "select");
 		}
-		for (jp = jlist; jp != NULL; jp = jp->next) {
+		for (jp = janitors; jp != NULL; jp = jp->next) {
 			if (FD_ISSET(jp->sock, &fds)) {
 				fprintf(stderr, "DEBUG: activity on fd %d\n",
 				    jp->sock);
@@ -304,8 +347,9 @@ main(int ac, char *av[])
 			}
 		}
 	}
+
 	alarm(0);
-	for (jp = jlist; jp != NULL; jp = jpnext) {
+	for (jp = janitors; jp != NULL; jp = jpnext) {
 		jpnext = jp->next;
 		myfree(jp->ip);
 		myfree(jp->port);
