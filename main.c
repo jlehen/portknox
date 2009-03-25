@@ -13,6 +13,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <tcpd.h>
 #include <unistd.h>
 #include "conf.h"
 #include "faststring.h"
