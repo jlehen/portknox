@@ -90,10 +90,11 @@ run(void *p)
 }
 
 char *
-expand(const char *cmd, const char *ip)
+expand(const char *cmd, const char *ip, unsigned count)
 {
 	faststring *str;
 	const char *p;
+	char *countstr;
 
 	str = faststring_alloc(512);
 	p = cmd;
@@ -112,6 +113,13 @@ expand(const char *cmd, const char *ip)
 			break;
 		case 'h':
 			faststring_strcat(str, ip);
+			break;
+		case 'n':
+			(void)asprintf(&countstr, "%u", count);
+			if (countstr == NULL)
+				err(2, "String expansion");
+			faststring_strcat(str, countstr);
+			myfree(countstr);
 			break;
 		default:
 			faststring_strcat(str, "%");
@@ -267,12 +275,13 @@ tend(struct janitor *janitor)
 	 * Perform and schedule actions.
 	 */
 	for (action = janitor->actions; action != NULL; action = action->next) {
-		cmd = expand(action->cmd, ip);
+		cmd = expand(action->cmd, ip, janitor->count);
 		if (action->timeout == 0)
 			run(cmd);
 		else
 			schedule(action->timeout + 1, run, cmd);
 	}
+	janitor->count++;
 }
 
 int

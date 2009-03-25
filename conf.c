@@ -39,7 +39,7 @@ syntaxerr(int status, const char *fmt, ...)
 static void
 resolve(struct janitor *janitor)
 {
-	int s, error;
+	int error;
 	struct addrinfo hints, *ai;
 
 	hints.ai_family = AF_INET;
@@ -189,6 +189,7 @@ read_conf(const char *filename, struct janitor **jlist)
 		cur = mymalloc(sizeof (*cur), "struct janitor");
 		cur->actions = NULL;
 		cur->next = NULL;
+		cur->count = 0;
 		jcount++;
 
 		linep2 = strchr(linep, ':');

@@ -9,13 +9,13 @@ struct action {
 
 struct janitor {
 	struct janitor *next;
-	int line;
 	char *ip;			
 	char *port;
 	char *proto;
 	int sock;
 	struct addrinfo *addrinfo;
 	struct action *actions;
+	unsigned count;
 
 	/* Usage wheel. */
 	short *uswheel;
