@@ -282,7 +282,8 @@ main(int ac, char *av[])
 	struct janitor *jp, *jpnext;
 	struct task *nexttask, *curtask;
 	struct action *nextaction, *curaction;
-	int jcount, i, fdmax;
+	int jcount, i, s, fdmax;
+	struct addrinfo *ai;
 	fd_set fds_, fds;
 
 	sa.sa_handler = &quit;
@@ -295,8 +296,25 @@ main(int ac, char *av[])
 
 	fdmax = 0;
 	for (jp = janitors; jp != NULL; jp = jp->next) {
-		if (jp->sock > fdmax)
-			fdmax = jp->sock;
+		ai = jp->addrinfo;
+		s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+		if (s == -1)
+			err(2, "socket");
+		if (!strcmp(jp->proto, "tcp")) {
+			i = 1;
+			if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i,
+			    sizeof (i)) == -1)
+				err(2, "setsockopt");
+		}
+		if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
+			err(2, "bind");
+		if (!strcmp(jp->proto, "tcp"))
+			if (listen(s, 5) == -1)
+				err(2, "listen");
+		jp->sock = s;
+
+		if (s > fdmax)
+			fdmax = s;
 	}
 
 	sigemptyset(&alrm_sigset);

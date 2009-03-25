@@ -1,3 +1,8 @@
+/*
+ * conf.c
+ * Parse the configuration file and create janitors and their server sockets.
+ */
+
 #define _ISOC99_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
@@ -32,7 +37,7 @@ syntaxerr(int status, const char *fmt, ...)
 }
 
 static void
-await(struct janitor *janitor)
+resolve(struct janitor *janitor)
 {
 	int s, error;
 	struct addrinfo hints, *ai;
@@ -56,22 +61,6 @@ await(struct janitor *janitor)
 		    janitor->proto, gai_strerror(error));
 	assert(ai->ai_next == NULL);
 	janitor->addrinfo = ai;
-
-	s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-	if (s == -1)
-		err(2, "socket");
-	if (!strcmp(janitor->proto, "tcp")) {
-		error = 1;
-		if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &error,
-		    sizeof (error)) == -1)
-			err(2, "setsockopt");
-	}
-	if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
-		err(2, "bind");
-	if (!strcmp(janitor->proto, "tcp"))
-		if (listen(s, 5) == -1)
-			err(2, "listen");
-	janitor->sock = s;
 }
 
 #define	EAT_BLANKS(p)	    do { while (isblank(*p)) { p++; } } while (0)
@@ -252,7 +241,7 @@ read_conf(const char *filename, struct janitor **jlist)
 			cur->uswheel[i] = 0;
 		cur->uscur = 0;
 
-		await(cur);
+		resolve(cur);
 		fprintf(stderr, "DEBUG: new janitor %p on fd %d (%s:%s/%s)\n",
 		    cur, cur->sock, cur->ip, cur->port, cur->proto);
 
