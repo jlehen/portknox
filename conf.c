@@ -18,8 +18,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "util.h"
 #include "conf.h"
+#include "freebsdqueue.h"
+#include "util.h"
 
 static int linecount;
 const char *filename;
@@ -116,11 +117,8 @@ get_action(struct janitor *janitor, char *linep)
 	struct action *action, *ap;
 	int timeout;
 
-	if (janitor == NULL)
-		syntaxerr(1, "Unexpected action without janitor");
-
 	timeout = parse_timespan(&linep);
-	fprintf(stderr, "DEBUG: timeout %d, *linep: %s\n", timeout, linep);
+	fprintf(stderr, "DEBUG: janitor %p, new action, timeout %d, *linep: %s\n", janitor, timeout, linep);
 	if (timeout == -1 || *linep != ':')
 		syntaxerr(1, "Format expected: \"" ACTION_FORMAT "\"\n"
 		    "    with timeout: " TIMESPAN_FORMAT);
@@ -130,31 +128,33 @@ get_action(struct janitor *janitor, char *linep)
 	action = mymalloc(sizeof (*action), "struct action");
 	action->timeout = timeout;
 	action->cmd = strdup(linep);
-	action->next = NULL;
+	SLIST_NEXT(action, next) = NULL;
 
-	if (janitor->actions == NULL)
-		janitor->actions = action;
+	if (SLIST_EMPTY(&janitor->actions))
+		SLIST_INSERT_HEAD(&janitor->actions, action, next);
 	else {
-		for (ap = janitor->actions; ap->next != NULL; ap = ap->next)
-			;
-		ap->next = action;
+		ap = SLIST_FIRST(&janitor->actions);
+		while (SLIST_NEXT(ap, next) != NULL)
+			ap = SLIST_NEXT(ap, next);
+		SLIST_INSERT_AFTER(ap, action, next);
 	}
 }
 
 int
-read_conf(const char *filename, struct janitor **jlist)
+read_conf(const char *filename, struct janitorlist *jlist)
 {
 	FILE *f;
 	char line[1024];
 	char *linep, *linep2;
-	struct janitor *prev, *cur;
+	struct janitor *janitor, *jp;
 	int i, jcount;
 	long n;
 
 	f = fopen(filename, "r");
 	if (f == NULL)
 		err(1, "%s", filename);
-	*jlist = prev = cur = NULL;
+	SLIST_INIT(jlist);
+	janitor = NULL;
 	linecount = 0;
 	jcount = 0;
 	while (1) {
@@ -172,7 +172,10 @@ read_conf(const char *filename, struct janitor **jlist)
 
 		if (*linep == '\t') {
 			linep++;
-			get_action(cur, linep);
+			if (janitor == NULL)
+				syntaxerr(1, "Unexpected action without "
+				    "janitor");
+			get_action(janitor, linep);
 			continue;
 		}
 
@@ -183,34 +186,34 @@ read_conf(const char *filename, struct janitor **jlist)
 		 * New janitor.
 		 */
 
-		if (cur != NULL && cur->actions == NULL)
+		if (janitor != NULL && SLIST_EMPTY(&janitor->actions))
 			syntaxerr(1, "Janitor with no actions");
 
-		cur = mymalloc(sizeof (*cur), "struct janitor");
-		cur->actions = NULL;
-		cur->next = NULL;
-		cur->count = 0;
+		janitor = mymalloc(sizeof (*janitor), "struct janitor");
+		SLIST_INIT(&janitor->actions);
+		SLIST_NEXT(janitor, next) = NULL;
+		janitor->count = 0;
 		jcount++;
 
 		linep2 = strchr(linep, ':');
 		if (linep2 == NULL)
 			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 		*linep2 = '\0';
-		cur->ip = strdup(linep);
+		janitor->ip = strdup(linep);
 		linep = linep2 + 1;
 
 		linep2 = strchr(linep, '/');
 		if (linep2 == NULL)
 			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 		*linep2 = '\0';
-		cur->port = strdup(linep);
+		janitor->port = strdup(linep);
 		linep = linep2 + 1;
 
 		linep2 = strpbrk(linep, " \t");
 		if (linep2 == NULL)
 			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 		*linep2 = '\0';
-		cur->proto = strdup(linep);
+		janitor->proto = strdup(linep);
 		linep = linep2 + 1;
 
 		EAT_BLANKS(linep);
@@ -226,32 +229,34 @@ read_conf(const char *filename, struct janitor **jlist)
 		if ((n == 0 && errno == EINVAL) || n < 0 ||
 		    (n == LONG_MAX && errno == ERANGE))
 			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		cur->usmax = n;
+		janitor->usmax = n;
 		linep = linep2 + 1;
 
-		cur->uswheelsz = parse_timespan(&linep);
-		if (cur->uswheelsz == -1)
+		janitor->uswheelsz = parse_timespan(&linep);
+		if (janitor->uswheelsz == -1)
 			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 		EAT_BLANKS(linep);
 		if (*linep != '\0')
 			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
 
-		cur->uswheel = mymalloc(cur->uswheelsz *
-		    sizeof (*cur->uswheel), "usage wheel");
-		for (i = 0; i < cur->uswheelsz; i++)
-			cur->uswheel[i] = 0;
-		cur->uscur = 0;
+		janitor->uswheel = mymalloc(janitor->uswheelsz *
+		    sizeof (*janitor->uswheel), "usage wheel");
+		for (i = 0; i < janitor->uswheelsz; i++)
+			janitor->uswheel[i] = 0;
+		janitor->uscur = 0;
 
-		resolve(cur);
-		fprintf(stderr, "DEBUG: new janitor %p on fd %d (%s:%s/%s)\n",
-		    cur, cur->sock, cur->ip, cur->port, cur->proto);
+		resolve(janitor);
+		fprintf(stderr, "DEBUG: new janitor %p (%s:%s/%s)\n",
+		    janitor, janitor->ip, janitor->port, janitor->proto);
 
-		if (*jlist == NULL) {
-			*jlist = prev = cur;
+		if (SLIST_EMPTY(jlist)) {
+			SLIST_INSERT_HEAD(jlist, janitor, next);
 			continue;
 		}
-		prev->next = cur;
-		prev = cur;
+		jp = SLIST_FIRST(jlist);
+		while (SLIST_NEXT(jp, next) != NULL)
+			jp = SLIST_NEXT(jp, next);
+		SLIST_INSERT_AFTER(jp, janitor, next);
 	}
 	fclose(f);
 	return jcount;
