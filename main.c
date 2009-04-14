@@ -26,13 +26,13 @@
 #define	TIMEOUT_WHEEL_SIZE	5
 
 struct task {
-	SLIST_ENTRY(task) next;
+	LIST_ENTRY(task) wheel_chain;
 	unsigned int tick;
 	void (*func)(void *);
 	void *arg; 
 };
 
-SLIST_HEAD(tasklist, task);
+LIST_HEAD(tasklist, task);
 
 static struct janitorlist janitors;
 static struct tasklist timeout_wheel[TIMEOUT_WHEEL_SIZE];
@@ -49,26 +49,24 @@ quit(int s __attribute__ ((unused)))
 }
 
 void
-run(void *p)
+run(char *cmd)
 {
-	char *cmd, *sp;
+	char *sp;
 	char **argv, **ap;
 	int asize;
 	struct janitor *jp;
 	pid_t pid;
 
-	fprintf(stderr, "DEBUG: gonna run '%s'\n", (char *)p);
+	fprintf(stderr, "DEBUG: gonna run '%s'\n", (char *)cmd);
 	pid = fork();
 	if (pid == -1) {
 		warn("Can't fork");
 		return;
 	}
-	if (pid > 0) {
-		myfree(p);
+	if (pid > 0)
 		return;
-	}
 
-	sp = cmd = p;
+	sp = cmd;
 	asize = 16;
 	ap = argv = mymalloc(asize * sizeof (*argv), "argument list");
 	while (cmd != NULL) {
@@ -89,7 +87,15 @@ run(void *p)
 
 	if (execvp(argv[0], argv) == -1)
 		warn("Can't exec %s", argv[0]);
-	exit(255);
+	exit(127);
+}
+
+void
+runcallout(void *p)
+{
+
+	run(p);
+	myfree(p);
 }
 
 char *
@@ -152,7 +158,7 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 
 	prevtp = NULL;
-	SLIST_FOREACH(tp, &timeout_wheel[slot], next) {
+	LIST_FOREACH(tp, &timeout_wheel[slot], wheel_chain) {
 		if (tp == NULL)
 			break;
 		if (tp->tick > task->tick)
@@ -163,10 +169,10 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	fprintf(stderr, "DEBUG: schedule, cur %p, prev %p\n", tp, prevtp);
 	*/
 	if (prevtp == NULL)
-		SLIST_FIRST(&timeout_wheel[slot]) = task;
+		LIST_FIRST(&timeout_wheel[slot]) = task;
 	else
-		SLIST_NEXT(prevtp, next) = task;
-	SLIST_NEXT(task, next) = tp;
+		LIST_NEXT(prevtp, wheel_chain) = task;
+	LIST_NEXT(task, wheel_chain) = tp;
 
 	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 }
@@ -186,17 +192,17 @@ tick()
 	 */
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	prevtp = NULL;
-	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, SLIST_FIRST(&timeout_wheel[slot]));
-	SLIST_FOREACH(tp, &timeout_wheel[slot], next) {
+	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, LIST_FIRST(&timeout_wheel[slot]));
+	LIST_FOREACH(tp, &timeout_wheel[slot], wheel_chain) {
 		if (tp->tick > curtick)
 			break;
 		prevtp = tp;
 	}
 	fprintf(stderr, "DEBUG: alarm, prev task %p, next task %p\n", prevtp, tp);
 	if (prevtp != NULL) {
-		SLIST_NEXT(prevtp, next) = NULL;
-		SLIST_FIRST(&tasks_todo) = SLIST_FIRST(&timeout_wheel[slot]);
-		SLIST_FIRST(&timeout_wheel[slot]) = tp;
+		LIST_NEXT(prevtp, wheel_chain) = NULL;
+		LIST_FIRST(&tasks_todo) = LIST_FIRST(&timeout_wheel[slot]);
+		LIST_FIRST(&timeout_wheel[slot]) = tp;
 	}
 
 	/*
@@ -274,13 +280,13 @@ tend(struct janitor *janitor)
 	 * Perform and schedule actions.
 	 */
 	SLIST_FOREACH(action, &janitor->actions, next) {
-		cmd = expand(action->cmd, ip, janitor->count);
+		cmd = expand(action->cmd, ip, janitor->usecount);
 		if (action->timeout == 0)
-			run(cmd);
+			runcallout(cmd);
 		else
-			schedule(action->timeout + 1, run, cmd);
+			schedule(action->timeout + 1, runcallout, cmd);
 	}
-	janitor->count++;
+	janitor->usecount++;
 }
 
 int
@@ -330,7 +336,7 @@ main(int ac, char *av[])
 
 	/* Timeout wheel. */
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++)
-		SLIST_FIRST(&timeout_wheel[i]) = NULL;
+		LIST_FIRST(&timeout_wheel[i]) = NULL;
 
 	sa.sa_handler = &tick;
 	sa.sa_flags = 0;
@@ -348,11 +354,11 @@ main(int ac, char *av[])
 	while (!mustquit) {
 		/* Handle callouts. */
 		sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
-		SLIST_FOREACH_SAFE(tp, &tasks_todo, next, tmptp) {
+		LIST_FOREACH_SAFE(tp, &tasks_todo, wheel_chain, tmptp) {
 			(*tp->func)(tp->arg);
 			myfree(tp);
 		}
-		SLIST_FIRST(&tasks_todo) = NULL;
+		LIST_FIRST(&tasks_todo) = NULL;
 		sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 
 		fds = fds_;
@@ -387,12 +393,12 @@ main(int ac, char *av[])
 		myfree(jp->addrinfo);
 		myfree(jp);
 	}
-	SLIST_FOREACH_SAFE(tp, &tasks_todo, next, tmptp) {
+	LIST_FOREACH_SAFE(tp, &tasks_todo, wheel_chain, tmptp) {
 		myfree(tp->arg);
 		myfree(tp);
 	}
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++) {
-		SLIST_FOREACH_SAFE(tp, &timeout_wheel[i], next, tmptp) {
+		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], wheel_chain, tmptp) {
 			myfree(tp->arg);
 			myfree(tp);
 		}

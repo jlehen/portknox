@@ -18,7 +18,7 @@ struct janitor {
 	int sock;
 	struct addrinfo *addrinfo;
 	struct actionlist actions;
-	unsigned count;
+	unsigned usecount;		/* Number of janitor use so far */
 
 	/* Usage wheel. */
 	short *uswheel;

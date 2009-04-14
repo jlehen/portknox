@@ -192,7 +192,7 @@ read_conf(const char *filename, struct janitorlist *jlist)
 		janitor = mymalloc(sizeof (*janitor), "struct janitor");
 		SLIST_INIT(&janitor->actions);
 		SLIST_NEXT(janitor, next) = NULL;
-		janitor->count = 0;
+		janitor->usecount = 0;
 		jcount++;
 
 		linep2 = strchr(linep, ':');
