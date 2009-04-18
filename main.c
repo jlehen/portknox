@@ -26,7 +26,7 @@
 #define	TIMEOUT_WHEEL_SIZE	5
 
 struct task {
-	LIST_ENTRY(task) wheel_chain;
+	LIST_ENTRY(task) wheel;
 	unsigned int tick;
 	void (*func)(void *);
 	void *arg; 
@@ -158,7 +158,7 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 
 	prevtp = NULL;
-	LIST_FOREACH(tp, &timeout_wheel[slot], wheel_chain) {
+	LIST_FOREACH(tp, &timeout_wheel[slot], wheel) {
 		if (tp == NULL)
 			break;
 		if (tp->tick > task->tick)
@@ -171,8 +171,8 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	if (prevtp == NULL)
 		LIST_FIRST(&timeout_wheel[slot]) = task;
 	else
-		LIST_NEXT(prevtp, wheel_chain) = task;
-	LIST_NEXT(task, wheel_chain) = tp;
+		LIST_NEXT(prevtp, wheel) = task;
+	LIST_NEXT(task, wheel) = tp;
 
 	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 }
@@ -193,14 +193,14 @@ tick()
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	prevtp = NULL;
 	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, LIST_FIRST(&timeout_wheel[slot]));
-	LIST_FOREACH(tp, &timeout_wheel[slot], wheel_chain) {
+	LIST_FOREACH(tp, &timeout_wheel[slot], wheel) {
 		if (tp->tick > curtick)
 			break;
 		prevtp = tp;
 	}
 	fprintf(stderr, "DEBUG: alarm, prev task %p, next task %p\n", prevtp, tp);
 	if (prevtp != NULL) {
-		LIST_NEXT(prevtp, wheel_chain) = NULL;
+		LIST_NEXT(prevtp, wheel) = NULL;
 		LIST_FIRST(&tasks_todo) = LIST_FIRST(&timeout_wheel[slot]);
 		LIST_FIRST(&timeout_wheel[slot]) = tp;
 	}
@@ -354,7 +354,7 @@ main(int ac, char *av[])
 	while (!mustquit) {
 		/* Handle callouts. */
 		sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
-		LIST_FOREACH_SAFE(tp, &tasks_todo, wheel_chain, tmptp) {
+		LIST_FOREACH_SAFE(tp, &tasks_todo, wheel, tmptp) {
 			(*tp->func)(tp->arg);
 			myfree(tp);
 		}
@@ -393,12 +393,12 @@ main(int ac, char *av[])
 		myfree(jp->addrinfo);
 		myfree(jp);
 	}
-	LIST_FOREACH_SAFE(tp, &tasks_todo, wheel_chain, tmptp) {
+	LIST_FOREACH_SAFE(tp, &tasks_todo, wheel, tmptp) {
 		myfree(tp->arg);
 		myfree(tp);
 	}
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++) {
-		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], wheel_chain, tmptp) {
+		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], wheel, tmptp) {
 			myfree(tp->arg);
 			myfree(tp);
 		}
