@@ -23,7 +23,17 @@
 #include "util.h"
 
 static int linecount;
-const char *filename;
+static const char *filename;
+
+#define	JANITOR_SYNTAX	    \
+    "Syntax:\n" \
+    "  listen <ip>:<port>/<proto> [modifiers]\n" \
+    "  \\t\taction at <interval>: <action>\n" \
+    "  ...\n" \
+    "Modifiers:\n" \
+    "  rate <max>/<interval>	    - Limit janitor use (MANDATORY)\n" \
+    "Interval:\n" \
+    "  <integer>[smhdw]\n"
 
 static void
 syntaxerr(int status, const char *fmt, ...)
@@ -33,8 +43,10 @@ syntaxerr(int status, const char *fmt, ...)
 
 	va_start(ap, fmt);
 	if (vasprintf(&msg, fmt, ap) == -1)
-		errx(status, "%s(%d): %s", filename, linecount, fmt);
-	err(status, "%s(%d): %s", filename, linecount, msg);
+		msg = (char *)fmt;
+	fprintf(stderr, "%s(%d): %s\n", filename, linecount, msg);
+	fprintf(stderr, JANITOR_SYNTAX);
+	exit(status);
 }
 
 static void
@@ -65,12 +77,8 @@ resolve(struct janitor *janitor)
 }
 
 #define	EAT_BLANKS(p)	    do { while (isblank(*p)) { p++; } } while (0)
-#define	JANITOR_FORMAT	    "<ip>/<port>:<proto> <max>/<interval>"
-#define	ACTION_FORMAT	    "<TAB><timeout>: <action>"
-#define TIMESPAN_FORMAT	    "<integer><'s'|'m'|'h'|'d'|'w'>"
-
 static int
-parse_timespan(char **linepp)
+parse_timespan(char **linepp, const char *what)
 {
 	int i;
 	long n;
@@ -85,7 +93,7 @@ parse_timespan(char **linepp)
 	case 's': case 'm': case 'h': case 'd': case 'w':
 		break;
 	default:
-		return -1;
+		syntaxerr(1, "Bad interval unit for %s: %c", what, *p);
 	}
 
 	unit = *p;
@@ -94,7 +102,8 @@ parse_timespan(char **linepp)
 	n = strtol(*linepp, NULL, 10);
 	if ((n == 0 && errno == EINVAL) || n < 0 ||
 	    (n == LONG_MAX && errno == ERANGE))
-		return -1;
+		syntaxerr(1, "Bad <integer> for interval for %s: %s",
+		   what,  *linepp);
 
 	switch (unit) {
 	case 'w':
@@ -112,17 +121,63 @@ parse_timespan(char **linepp)
 }
 
 static void
+parse_rate(struct janitor *janitor, char **linep)
+{
+	int i;
+	long n;
+	char *p;
+
+	i = strspn(*linep, "0123456789");
+	if (i == 0)
+		syntaxerr(1, "Expecting interger <max> for rate: %s", linep);
+	p = *linep + i;
+	if (*p != '/')
+		syntaxerr(1, "Expecting '/' for rate: %c", *p);
+	*p = '\0';
+	n = strtol(*linep, NULL, 10);
+	if ((n == 0 && errno == EINVAL) || n < 0 ||
+	    (n == LONG_MAX && errno == ERANGE))
+		syntaxerr(1, "Bad <max> value for rate: %s", linep);
+	janitor->usmax = n;
+	*linep = p + 1;
+
+	janitor->uswheelsz = parse_timespan(linep, "rate");
+}
+
+
+static void
 get_action(struct janitor *janitor, char *linep)
 {
 	struct action *action, *ap;
 	int timeout;
+	char *p;
 
-	timeout = parse_timespan(&linep);
+	p = strpbrk(linep, " \t");
+	if (p == NULL)
+		syntaxerr(1, "Cannot find next blank: %s", linep);
+	*p = '\0';
+	if (strcmp(linep, "action"))
+		syntaxerr(1, "Expecting 'action': %s", p);
+	linep = p + 1;
+
+	EAT_BLANKS(linep);
+
+	p = strpbrk(linep, " \t");
+	if (p == NULL)
+		syntaxerr(1, "Cannot find next blank: %s", linep);
+	*p = '\0';
+	if (strcmp(linep, "at"))
+		syntaxerr(1, "Expecting 'at': %s", p);
+	linep = p + 1;
+
+	EAT_BLANKS(linep);
+
+	timeout = parse_timespan(&linep, "action");
 	fprintf(stderr, "DEBUG: janitor %p, new action, timeout %d, *linep: %s\n", janitor, timeout, linep);
-	if (timeout == -1 || *linep != ':')
-		syntaxerr(1, "Format expected: \"" ACTION_FORMAT "\"\n"
-		    "    with timeout: " TIMESPAN_FORMAT);
+	if (*linep != ':')
+		syntaxerr(1, "Expecting ':' for action: %c", *linep);
 	linep++;
+
 	EAT_BLANKS(linep);
 
 	action = mymalloc(sizeof (*action), "struct action");
@@ -141,15 +196,15 @@ get_action(struct janitor *janitor, char *linep)
 }
 
 int
-read_conf(const char *filename, struct janitorlist *jlist)
+read_conf(const char *file, struct janitorlist *jlist)
 {
 	FILE *f;
 	char line[1024];
-	char *linep, *linep2;
+	char *linep, *p;
 	struct janitor *janitor, *jp;
 	int i, jcount;
-	long n;
 
+	filename = file;
 	f = fopen(filename, "r");
 	if (f == NULL)
 		err(1, "%s", filename);
@@ -174,7 +229,7 @@ read_conf(const char *filename, struct janitorlist *jlist)
 			linep++;
 			if (janitor == NULL)
 				syntaxerr(1, "Unexpected action without "
-				    "janitor");
+				    "janitor declaration");
 			get_action(janitor, linep);
 			continue;
 		}
@@ -187,57 +242,70 @@ read_conf(const char *filename, struct janitorlist *jlist)
 		 */
 
 		if (janitor != NULL && SLIST_EMPTY(&janitor->actions))
-			syntaxerr(1, "Janitor with no actions");
+			syntaxerr(1, "Janitor with no action");
 
 		janitor = mymalloc(sizeof (*janitor), "struct janitor");
 		SLIST_INIT(&janitor->actions);
 		SLIST_NEXT(janitor, next) = NULL;
 		janitor->usecount = 0;
+		janitor->uswheelsz = 0;
+		janitor->usmax = 0;
+		janitor->uscur = 0;
 		jcount++;
 
-		linep2 = strchr(linep, ':');
-		if (linep2 == NULL)
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		*linep2 = '\0';
+		p = strpbrk(linep, " \t");
+		if (p == NULL)
+			syntaxerr(1, "Cannot find next blank: %s", linep);
+		*p = '\0';
+		if (strcmp(linep, "listen"))
+			syntaxerr(1, "Expecting 'listen': %s", p);
+		linep = p + 1;
+
+		EAT_BLANKS(linep);
+
+		p = strchr(linep, ':');
+		if (p == NULL)
+			syntaxerr(1, "Cannot find ':': %s", linep);
+		*p = '\0';
 		janitor->ip = strdup(linep);
-		linep = linep2 + 1;
+		linep = p + 1;
 
-		linep2 = strchr(linep, '/');
-		if (linep2 == NULL)
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		*linep2 = '\0';
+		p = strchr(linep, '/');
+		if (p == NULL)
+			syntaxerr(1, "Cannot find '/': %s", linep);
+		*p = '\0';
 		janitor->port = strdup(linep);
-		linep = linep2 + 1;
+		linep = p + 1;
 
-		linep2 = strpbrk(linep, " \t");
-		if (linep2 == NULL)
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		*linep2 = '\0';
+		p = strpbrk(linep, " \t");
+		if (p == NULL)
+			syntaxerr(1, "Cannot find next blank: %s", linep);
+		*p = '\0';
 		janitor->proto = strdup(linep);
-		linep = linep2 + 1;
+		linep = p + 1;
 
 		EAT_BLANKS(linep);
 
-		i = strspn(linep, "0123456789");
-		if (i == 0)
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		linep2 = linep + i;
-		if (*linep2 != '/')
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		*linep2 = '\0';
-		n = strtol(linep, NULL, 10);
-		if ((n == 0 && errno == EINVAL) || n < 0 ||
-		    (n == LONG_MAX && errno == ERANGE))
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		janitor->usmax = n;
-		linep = linep2 + 1;
+		while (*linep != '\0') {
+			p = strpbrk(linep, " \t");
+			/* There is no option without argument for now */
+			if (p == NULL)
+				syntaxerr(1, "Cannot find next blank: %s",
+				    linep);
 
-		janitor->uswheelsz = parse_timespan(&linep);
-		if (janitor->uswheelsz == -1)
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
-		EAT_BLANKS(linep);
-		if (*linep != '\0')
-			syntaxerr(1, "Format expected: " JANITOR_FORMAT);
+			*p++ = '\0';
+			if (!strcmp(linep, "rate"))
+				parse_rate(janitor, &p);
+			else
+				syntaxerr(1, "Unknown modifier: %s", linep);
+
+			linep = p;
+			EAT_BLANKS(linep);
+		}
+
+		if (janitor->uswheelsz == 0)
+			syntaxerr(1, "Please specify a valid rate interval: %s",
+			    linep);
 
 		janitor->uswheel = mymalloc(janitor->uswheelsz *
 		    sizeof (*janitor->uswheel), "usage wheel");
