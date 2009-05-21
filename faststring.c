@@ -88,6 +88,13 @@ faststring_strncat(faststring *dst, const char *src, int len)
 }
 
 char *
+faststring_peek(const faststring *fs)
+{
+
+	return fs->begin;
+}
+
+char *
 faststring_export(faststring *fs)
 {
 	char *s;
