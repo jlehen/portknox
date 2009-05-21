@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "conf.h"
+#include "faststring.h"
 #include "freebsdqueue.h"
 #include "util.h"
 
@@ -35,6 +36,8 @@ static const char *filename;
     "Interval:\n" \
     "  <integer>[smhdw]\n"
 
+#define	EAT_BLANKS(p)	    do { while (isblank(*(p))) { (p)++; } } while (0)
+
 static void
 syntaxerr(int status, const char *fmt, ...)
 {
@@ -50,7 +53,7 @@ syntaxerr(int status, const char *fmt, ...)
 }
 
 static void
-resolve(struct janitor *janitor)
+fill_addrinfo(struct janitor *janitor)
 {
 	int error;
 	struct addrinfo hints, *ai;
@@ -76,36 +79,83 @@ resolve(struct janitor *janitor)
 	janitor->addrinfo = ai;
 }
 
-#define	EAT_BLANKS(p)	    do { while (isblank(*p)) { p++; } } while (0)
-static int
-parse_timespan(char **linepp, const char *what)
+static faststring *
+get_word(const char **p)
 {
-	int i;
-	long n;
-	char *p;
-	char unit;
+	faststring *fs;
+	int len;
 
-	i = strspn(*linepp, "012356789");
-	if (i == 0)
+	EAT_BLANKS(*p);
+	len = (int)strspn(*p, "abcdefghijklmnopqrstuvwxyz");
+	if (len == 0)
+		return NULL;
+	fs = faststring_alloc(len + 1);
+	faststring_strncpy(fs, *p, len);
+	*p += len;
+	return fs;
+}
+
+static faststring *
+get_number(const char **p)
+{
+	faststring *fs;
+	int len;
+
+	EAT_BLANKS(*p);
+	len = (int) strspn(*p, "0123456789");
+	if (len == 0)
+		return NULL;
+	fs = faststring_alloc(len + 1);
+	faststring_strncpy(fs, *p, len);
+	*p += len;
+	return fs;
+}
+
+static int
+get_punct(const char **p, int which)
+{
+	int c;
+
+	EAT_BLANKS(*p);
+	if (!ispunct(**p))
 		return -1;
-	p = *linepp + i;
-	switch (*p) {
+	c = **p;
+	if (which > '\0' && c != which)
+		return -1;
+	(*p)++;
+	return c;
+}
+
+static int
+parse_timespan(const char **lpp, const char *what)
+{
+	faststring *num;
+	faststring *unit;
+	long n;
+	char u;
+
+	num = get_number(lpp);
+	if (num == NULL)
+		syntaxerr(1, "Expecting number for %s: %s", what, *lpp);
+	unit = get_word(lpp);
+	if (unit == NULL || faststring_strlen(unit) > 1)
+		syntaxerr(1, "Expecting interval unit for %s: %s", what,
+		    unit == NULL ? *lpp : faststring_peek(unit));
+	u = faststring_peek(unit)[0];
+	switch (u) {
 	case 's': case 'm': case 'h': case 'd': case 'w':
 		break;
 	default:
-		syntaxerr(1, "Bad interval unit for %s: %c", what, *p);
+		syntaxerr(1, "Bad interval unit for %s: %c", what, u);
 	}
 
-	unit = *p;
-	*p = '\0';
-
-	n = strtol(*linepp, NULL, 10);
+	n = strtol(faststring_peek(num), NULL, 10);
 	if ((n == 0 && errno == EINVAL) || n < 0 ||
 	    (n == LONG_MAX && errno == ERANGE))
 		syntaxerr(1, "Bad <integer> for interval for %s: %s",
-		   what,  *linepp);
+		   what,  *lpp);
 
-	switch (unit) {
+	switch (u) {
 	case 'w':
 		n *= 7;
 	case 'd':
@@ -115,84 +165,108 @@ parse_timespan(char **linepp, const char *what)
 	case 'm':
 		n *= 60;
 	}
+	faststring_free(num);
+	faststring_free(unit);
 
-	*linepp = p + 1;
 	return (int)n;
 }
 
 static void
-parse_rate(struct janitor *janitor, char **linep)
+parse_rate(struct janitor *janitor, const char **lpp)
 {
+	faststring *max;
+	long m;
 	int i;
-	long n;
-	char *p;
 
-	i = strspn(*linep, "0123456789");
-	if (i == 0)
-		syntaxerr(1, "Expecting interger <max> for rate: %s", linep);
-	p = *linep + i;
-	if (*p != '/')
-		syntaxerr(1, "Expecting '/' for rate: %c", *p);
-	*p = '\0';
-	n = strtol(*linep, NULL, 10);
-	if ((n == 0 && errno == EINVAL) || n < 0 ||
-	    (n == LONG_MAX && errno == ERANGE))
-		syntaxerr(1, "Bad <max> value for rate: %s", linep);
-	janitor->usmax = n;
-	*linep = p + 1;
+	if (janitor->uswheelsz != 0)
+		syntaxerr(1, "Max rate property cannot be specified more than "
+		    "once: %s", lpp);
 
-	janitor->uswheelsz = parse_timespan(linep, "rate");
+	max = get_number(lpp);
+	if (max == NULL)
+		syntaxerr(1, "Expecting interger <max> for rate: %s", *lpp);
+	m = strtol(faststring_peek(max), NULL, 10);
+	if ((m == 0 && errno == EINVAL) || m < 0 ||
+	    (m == LONG_MAX && errno == ERANGE))
+		syntaxerr(1, "Bad <max> value for rate: %s", *lpp);
+	janitor->usmax = m;
+
+	if (-1 == get_punct(lpp, '/'))
+		syntaxerr(1, "Expecting '/' for rate: %s", *lpp);
+
+	janitor->uswheelsz = parse_timespan(lpp, "rate");
+
+	if (janitor->uswheelsz == 0)
+		syntaxerr(1, "Please specify a valid rate interval: %s", *lpp);
+
+	janitor->uswheel = mymalloc(janitor->uswheelsz *
+	    sizeof (*janitor->uswheel), "usage wheel");
+	for (i = 0; i < janitor->uswheelsz; i++)
+		janitor->uswheel[i] = 0;
+	janitor->uscur = 0;
+
+	faststring_free(max);
 }
 
 
 static void
-get_action(struct janitor *janitor, char *linep)
+get_property(struct janitor *janitor, const char *lp)
 {
+	faststring *word;
 	struct action *action, *ap;
+	const char *lp0;
 	int timeout;
-	char *p;
 
-	p = strpbrk(linep, " \t");
-	if (p == NULL)
-		syntaxerr(1, "Cannot find next blank: %s", linep);
-	*p = '\0';
-	if (strcmp(linep, "action"))
-		syntaxerr(1, "Expecting 'action': %s", p);
-	linep = p + 1;
+	lp0 = lp;
+	word = get_word(&lp);
+	if (word == NULL)
+		syntaxerr(1, "Expecting property name: %s", lp);
 
-	EAT_BLANKS(linep);
+	if (!strcmp(faststring_peek(word), "action")) {
+		faststring_free(word);
+		word = get_word(&lp);
+		if (word == NULL || strcmp(faststring_peek(word), "at"))
+			syntaxerr(1, "Expecting \"at\" after word \"action\": "
+			    "%s", word == NULL ? lp : faststring_peek(word));
 
-	p = strpbrk(linep, " \t");
-	if (p == NULL)
-		syntaxerr(1, "Cannot find next blank: %s", linep);
-	*p = '\0';
-	if (strcmp(linep, "at"))
-		syntaxerr(1, "Expecting 'at': %s", p);
-	linep = p + 1;
+		timeout = parse_timespan(&lp, "action");
+		fprintf(stderr, "DEBUG: janitor %p, new action, timeout %d, *lp: %s\n", janitor, timeout, lp);
 
-	EAT_BLANKS(linep);
+		if (-1 == get_punct(&lp, ':'))
+			syntaxerr(1, "Expecting ':' after \"action at "
+			    "<interval>\": %s", lp);
 
-	timeout = parse_timespan(&linep, "action");
-	fprintf(stderr, "DEBUG: janitor %p, new action, timeout %d, *linep: %s\n", janitor, timeout, linep);
-	if (*linep != ':')
-		syntaxerr(1, "Expecting ':' for action: %c", *linep);
-	linep++;
+		EAT_BLANKS(lp);
+		action = mymalloc(sizeof (*action), "struct action");
+		action->timeout = timeout;
+		action->cmd = strdup(lp);
+		SLIST_NEXT(action, next) = NULL;
 
-	EAT_BLANKS(linep);
+		if (SLIST_EMPTY(&janitor->actions))
+			SLIST_INSERT_HEAD(&janitor->actions, action, next);
+		else {
+			ap = SLIST_FIRST(&janitor->actions);
+			while (SLIST_NEXT(ap, next) != NULL)
+				ap = SLIST_NEXT(ap, next);
+			SLIST_INSERT_AFTER(ap, action, next);
+		}
 
-	action = mymalloc(sizeof (*action), "struct action");
-	action->timeout = timeout;
-	action->cmd = strdup(linep);
-	SLIST_NEXT(action, next) = NULL;
+	} else if (!strcmp(faststring_peek(word), "max")) {
+		faststring_free(word);
+		word = get_word(&lp);
+		if (word == NULL || strcmp(faststring_peek(word), "rate"))
+			syntaxerr(1, "Expecting \"rate\" after word \"max\": "
+			    "%s", word == NULL ? lp : faststring_peek(word));
 
-	if (SLIST_EMPTY(&janitor->actions))
-		SLIST_INSERT_HEAD(&janitor->actions, action, next);
-	else {
-		ap = SLIST_FIRST(&janitor->actions);
-		while (SLIST_NEXT(ap, next) != NULL)
-			ap = SLIST_NEXT(ap, next);
-		SLIST_INSERT_AFTER(ap, action, next);
-	}
+		if (-1 == get_punct(&lp, ':'))
+			syntaxerr(1, "Expecting ':' after \"max rate\": %s",
+			    lp);
+
+		parse_rate(janitor, &lp);
+	} else
+		syntaxerr(1, "Unexpected property name: %s", lp0);
+
+	faststring_free(word);
 }
 
 int
@@ -200,9 +274,10 @@ read_conf(const char *file, struct janitorlist *jlist)
 {
 	FILE *f;
 	char line[1024];
-	char *linep, *p;
+	char *lp, *p;
+	faststring *word;
 	struct janitor *janitor, *jp;
-	int i, jcount;
+	int jcount;
 
 	filename = file;
 	f = fopen(filename, "r");
@@ -219,22 +294,22 @@ read_conf(const char *file, struct janitorlist *jlist)
 				err(1, "%s", filename);
 			break;
 		}
-		linep = line;
-		while (*linep != '\n')
-			linep++;
-		*linep = '\0';
-		linep = line;
+		lp = line;
+		while (*lp != '\n')
+			lp++;
+		*lp = '\0';
+		lp = line;
 
-		if (*linep == '\t') {
-			linep++;
+		if (*lp == '\t') {
+			lp++;
 			if (janitor == NULL)
-				syntaxerr(1, "Unexpected action without "
-				    "janitor declaration");
-			get_action(janitor, linep);
+				syntaxerr(1, "Unexpected property without "
+				    "janitor declaration: %s", lp);
+			get_property(janitor, lp);
 			continue;
 		}
 
-		if (*linep == '\0' || *linep == '#')
+		if (*lp == '\0' || *lp == '#')
 			continue;
 
 		/*
@@ -253,67 +328,37 @@ read_conf(const char *file, struct janitorlist *jlist)
 		janitor->uscur = 0;
 		jcount++;
 
-		p = strpbrk(linep, " \t");
+		word = get_word((const char **)&lp);
+		if (word == NULL || strcmp(faststring_peek(word), "listen"))
+			syntaxerr(1, "Expecting 'listen': %s",
+			    word == NULL ? lp : faststring_peek(word));
+
+		faststring_free(word);
+		word = get_word((const char **)&lp);
+		if (word == NULL || strcmp(faststring_peek(word), "on"))
+			syntaxerr(1, "Expecting \"on\" after word \"listen\": "
+			    "%s", word == NULL ? lp : faststring_peek(word));
+		faststring_free(word);
+
+		EAT_BLANKS(lp);
+
+		p = strchr(lp, ':');
 		if (p == NULL)
-			syntaxerr(1, "Cannot find next blank: %s", linep);
+			syntaxerr(1, "Cannot find ':': %s", lp);
 		*p = '\0';
-		if (strcmp(linep, "listen"))
-			syntaxerr(1, "Expecting 'listen': %s", p);
-		linep = p + 1;
+		janitor->ip = strdup(lp);
+		lp = p + 1;
 
-		EAT_BLANKS(linep);
-
-		p = strchr(linep, ':');
+		p = strchr(lp, '/');
 		if (p == NULL)
-			syntaxerr(1, "Cannot find ':': %s", linep);
+			syntaxerr(1, "Cannot find '/': %s", lp);
 		*p = '\0';
-		janitor->ip = strdup(linep);
-		linep = p + 1;
+		janitor->port = strdup(lp);
+		lp = p + 1;
 
-		p = strchr(linep, '/');
-		if (p == NULL)
-			syntaxerr(1, "Cannot find '/': %s", linep);
-		*p = '\0';
-		janitor->port = strdup(linep);
-		linep = p + 1;
+		janitor->proto = strdup(lp);
 
-		p = strpbrk(linep, " \t");
-		if (p == NULL)
-			syntaxerr(1, "Cannot find next blank: %s", linep);
-		*p = '\0';
-		janitor->proto = strdup(linep);
-		linep = p + 1;
-
-		EAT_BLANKS(linep);
-
-		while (*linep != '\0') {
-			p = strpbrk(linep, " \t");
-			/* There is no option without argument for now */
-			if (p == NULL)
-				syntaxerr(1, "Cannot find next blank: %s",
-				    linep);
-
-			*p++ = '\0';
-			if (!strcmp(linep, "rate"))
-				parse_rate(janitor, &p);
-			else
-				syntaxerr(1, "Unknown modifier: %s", linep);
-
-			linep = p;
-			EAT_BLANKS(linep);
-		}
-
-		if (janitor->uswheelsz == 0)
-			syntaxerr(1, "Please specify a valid rate interval: %s",
-			    linep);
-
-		janitor->uswheel = mymalloc(janitor->uswheelsz *
-		    sizeof (*janitor->uswheel), "usage wheel");
-		for (i = 0; i < janitor->uswheelsz; i++)
-			janitor->uswheel[i] = 0;
-		janitor->uscur = 0;
-
-		resolve(janitor);
+		fill_addrinfo(janitor);
 		fprintf(stderr, "DEBUG: new janitor %p (%s:%s/%s)\n",
 		    janitor, janitor->ip, janitor->port, janitor->proto);
 
