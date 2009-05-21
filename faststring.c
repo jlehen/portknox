@@ -99,3 +99,9 @@ faststring_export(faststring *fs)
 	return s;
 }
 
+int
+faststring_strlen(const faststring *fs)
+{
+
+	return fs->end - fs->begin;
+}

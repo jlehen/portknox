@@ -15,5 +15,6 @@ extern faststring *faststring_strncpy(faststring *, const char *, int);
 extern faststring *faststring_strcat(faststring *, const char *);
 extern faststring *faststring_strncat(faststring *, const char *, int);
 extern char *faststring_export(faststring *);
+int faststring_strlen(const faststring *);
 
 #endif /* !_FASTSTRING_H_ */
