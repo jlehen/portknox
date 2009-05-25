@@ -210,7 +210,7 @@ parse_rate(struct janitor *janitor, const char **lpp)
 
 
 static void
-get_property(struct janitor *janitor, const char *lp)
+read_property(struct janitor *janitor, const char *lp)
 {
 	faststring *word;
 	struct action *action, *ap;
@@ -222,6 +222,7 @@ get_property(struct janitor *janitor, const char *lp)
 	if (word == NULL)
 		syntaxerr(1, "Expecting property name: %s", lp);
 
+	/* action at */
 	if (!strcmp(faststring_peek(word), "action")) {
 		faststring_free(word);
 		word = get_word(&lp);
@@ -251,6 +252,7 @@ get_property(struct janitor *janitor, const char *lp)
 			SLIST_INSERT_AFTER(ap, action, next);
 		}
 
+	/* max rate */
 	} else if (!strcmp(faststring_peek(word), "max")) {
 		faststring_free(word);
 		word = get_word(&lp);
@@ -269,12 +271,40 @@ get_property(struct janitor *janitor, const char *lp)
 	faststring_free(word);
 }
 
+static void
+read_listen_on(struct janitor *janitor, const char *lp)
+{
+	char *p;
+
+	EAT_BLANKS(lp);
+
+	p = strchr(lp, ':');
+	if (p == NULL)
+		syntaxerr(1, "Cannot find ':': %s", lp);
+	*p = '\0';
+	janitor->ip = strdup(lp);
+	lp = p + 1;
+
+	p = strchr(lp, '/');
+	if (p == NULL)
+		syntaxerr(1, "Cannot find '/': %s", lp);
+	*p = '\0';
+	janitor->port = strdup(lp);
+	lp = p + 1;
+
+	janitor->proto = strdup(lp);
+
+	fill_addrinfo(janitor);
+	fprintf(stderr, "DEBUG: new janitor %p (%s:%s/%s)\n",
+	    janitor, janitor->ip, janitor->port, janitor->proto);
+}
+
 int
 read_conf(const char *file, struct janitorlist *jlist)
 {
 	FILE *f;
 	char line[1024];
-	char *lp, *p;
+	char *lp;
 	faststring *word;
 	struct janitor *janitor, *jp;
 	int jcount;
@@ -305,7 +335,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 			if (janitor == NULL)
 				syntaxerr(1, "Unexpected property without "
 				    "janitor declaration: %s", lp);
-			get_property(janitor, lp);
+			read_property(janitor, lp);
 			continue;
 		}
 
@@ -329,38 +359,19 @@ read_conf(const char *file, struct janitorlist *jlist)
 		jcount++;
 
 		word = get_word((const char **)&lp);
-		if (word == NULL || strcmp(faststring_peek(word), "listen"))
-			syntaxerr(1, "Expecting 'listen': %s",
-			    word == NULL ? lp : faststring_peek(word));
-
-		faststring_free(word);
-		word = get_word((const char **)&lp);
-		if (word == NULL || strcmp(faststring_peek(word), "on"))
-			syntaxerr(1, "Expecting \"on\" after word \"listen\": "
-			    "%s", word == NULL ? lp : faststring_peek(word));
-		faststring_free(word);
-
-		EAT_BLANKS(lp);
-
-		p = strchr(lp, ':');
-		if (p == NULL)
-			syntaxerr(1, "Cannot find ':': %s", lp);
-		*p = '\0';
-		janitor->ip = strdup(lp);
-		lp = p + 1;
-
-		p = strchr(lp, '/');
-		if (p == NULL)
-			syntaxerr(1, "Cannot find '/': %s", lp);
-		*p = '\0';
-		janitor->port = strdup(lp);
-		lp = p + 1;
-
-		janitor->proto = strdup(lp);
-
-		fill_addrinfo(janitor);
-		fprintf(stderr, "DEBUG: new janitor %p (%s:%s/%s)\n",
-		    janitor, janitor->ip, janitor->port, janitor->proto);
+		if (word == NULL)
+			syntaxerr(1, "Expecting 'listen': %s", lp);
+		if (!strcmp(faststring_peek(word), "listen")) {
+			faststring_free(word);
+			word = get_word((const char **)&lp);
+			if (word == NULL || strcmp(faststring_peek(word), "on"))
+				syntaxerr(1, "Expecting \"on\" after word "
+				    "\"listen\": %s",
+				    word == NULL ? lp : faststring_peek(word));
+			faststring_free(word);
+		
+			read_listen_on(janitor, lp);
+		}
 
 		if (SLIST_EMPTY(jlist)) {
 			SLIST_INSERT_HEAD(jlist, janitor, next);
