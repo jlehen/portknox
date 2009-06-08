@@ -2,6 +2,10 @@
 #define _CONF_H_
 #include "freebsdqueue.h"
 
+#ifdef SNOOP
+#include <pcap.h>
+#endif
+
 struct action {
 	SLIST_ENTRY(action) next;
 	int timeout;
@@ -12,11 +16,33 @@ SLIST_HEAD(actionlist, action);
 
 struct janitor {
 	SLIST_ENTRY(janitor) next;
-	char *ip;			
-	char *port;
-	char *proto;
+
+	int line;
+	
+	enum {
+		LISTENING_JANITOR,
+#ifdef SNOOP
+		SNOOPING_JANITOR
+#endif
+	} type;
+
+	union {
+		struct {
+			char *ip;			
+			char *port;
+			char *proto;
+			struct addrinfo *addrinfo;
+		} listen;
+#ifdef SNOOP
+		struct {
+			char *iface;
+			char *filter;
+			struct bpf_program bpfpg;
+			pcap_t *pcap;
+		} snoop;
+#endif
+	} u;
 	int sock;
-	struct addrinfo *addrinfo;
 	struct actionlist actions;
 	unsigned usecount;		/* Number of janitor use so far */
 

@@ -22,6 +22,9 @@
 #include "faststring.h"
 #include "freebsdqueue.h"
 #include "util.h"
+#ifdef SNOOP
+#include <pcap.h>
+#endif
 
 static int linecount;
 static const char *filename;
@@ -59,24 +62,26 @@ fill_addrinfo(struct janitor *janitor)
 	struct addrinfo hints, *ai;
 
 	hints.ai_family = AF_INET;
-	if (!strcmp(janitor->proto, "tcp"))
+	if (!strcmp(janitor->u.listen.proto, "tcp"))
 		hints.ai_socktype = SOCK_STREAM;
-	else if (!strcmp(janitor->proto, "udp"))
+	else if (!strcmp(janitor->u.listen.proto, "udp"))
 		hints.ai_socktype = SOCK_DGRAM;
 	else
-		errx(1, "%s: Unknown protocol", janitor->proto);
+		errx(1, "%s: Unknown protocol", janitor->u.listen.proto);
 	hints.ai_protocol = 0;
 	hints.ai_flags = /*AI_ADDRCONFIG|*/AI_PASSIVE|AI_NUMERICHOST|AI_NUMERICSERV;
 	hints.ai_addrlen = 0;
 	hints.ai_addr = NULL;
 	hints.ai_canonname = NULL;
 	hints.ai_next = NULL;
-	error = getaddrinfo(janitor->ip, janitor->port, &hints, &ai);
+	error = getaddrinfo(janitor->u.listen.ip, janitor->u.listen.port,
+	    &hints, &ai);
 	if (error != 0)
-		errx(1, "%s:%s/%s: %s", janitor->ip, janitor->port,
-		    janitor->proto, gai_strerror(error));
+		errx(1, "%s:%s/%s: %s", janitor->u.listen.ip,
+		    janitor->u.listen.port, janitor->u.listen.proto,
+		    gai_strerror(error));
 	assert(ai->ai_next == NULL);
-	janitor->addrinfo = ai;
+	janitor->u.listen.addrinfo = ai;
 }
 
 static faststring *
@@ -272,9 +277,11 @@ read_property(struct janitor *janitor, const char *lp)
 }
 
 static void
-read_listen_on(struct janitor *janitor, const char *lp)
+read_listen_on(struct janitor *janitor, char *lp)
 {
 	char *p;
+
+	janitor->type = LISTENING_JANITOR;
 
 	EAT_BLANKS(lp);
 
@@ -282,22 +289,59 @@ read_listen_on(struct janitor *janitor, const char *lp)
 	if (p == NULL)
 		syntaxerr(1, "Cannot find ':': %s", lp);
 	*p = '\0';
-	janitor->ip = strdup(lp);
+	janitor->u.listen.ip = strdup(lp);
 	lp = p + 1;
 
 	p = strchr(lp, '/');
 	if (p == NULL)
 		syntaxerr(1, "Cannot find '/': %s", lp);
 	*p = '\0';
-	janitor->port = strdup(lp);
+	janitor->u.listen.port = strdup(lp);
 	lp = p + 1;
 
-	janitor->proto = strdup(lp);
+	janitor->u.listen.proto = strdup(lp);
 
 	fill_addrinfo(janitor);
 	fprintf(stderr, "DEBUG: new janitor %p (%s:%s/%s)\n",
-	    janitor, janitor->ip, janitor->port, janitor->proto);
+	    janitor, janitor->u.listen.ip, janitor->u.listen.port,
+	    janitor->u.listen.proto);
 }
+
+#ifdef SNOOP
+static void
+read_snoop_on(struct janitor *janitor, char *lp)
+{
+	char *p;
+	pcap_t *pcapp;
+
+	janitor->type = SNOOPING_JANITOR;
+
+	EAT_BLANKS(lp);
+
+	if (*lp == '\0')
+		syntaxerr(1, "Expecting interface after \"on\"");
+
+	p = strpbrk(lp, " \t");
+	if (p == NULL)
+		syntaxerr(1, "Expecting BPF filter after interface: %s", lp);
+	*p = '\0';
+	janitor->u.snoop.iface = strdup(lp);
+	lp = p + 1;
+
+	EAT_BLANKS(lp);
+
+	if (*lp == '\0')
+		syntaxerr(1, "Expecting BPF filter after interface");
+
+	janitor->u.snoop.filter = strdup(lp);
+	pcapp = pcap_open_dead(DLT_RAW, 128);
+	if (-1 == pcap_compile(pcapp, &janitor->u.snoop.bpfpg,
+	    janitor->u.snoop.filter, 0, 0))
+		syntaxerr(1, "Bad BPF filter: %s", pcap_geterr(pcapp));
+	pcap_freecode(&janitor->u.snoop.bpfpg);
+	pcap_close(pcapp);
+}
+#endif
 
 int
 read_conf(const char *file, struct janitorlist *jlist)
@@ -345,6 +389,10 @@ read_conf(const char *file, struct janitorlist *jlist)
 		/*
 		 * New janitor.
 		 */
+		fprintf(stderr, "DEBUG: line to parse: %s\n", lp);
+
+		if (janitor != NULL && janitor->uswheelsz == 0)
+			syntaxerr(1, "Janitor with no max rate");
 
 		if (janitor != NULL && SLIST_EMPTY(&janitor->actions))
 			syntaxerr(1, "Janitor with no action");
@@ -352,6 +400,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 		janitor = mymalloc(sizeof (*janitor), "struct janitor");
 		SLIST_INIT(&janitor->actions);
 		SLIST_NEXT(janitor, next) = NULL;
+		janitor->line = linecount;
 		janitor->usecount = 0;
 		janitor->uswheelsz = 0;
 		janitor->usmax = 0;
@@ -362,6 +411,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 		if (word == NULL)
 			syntaxerr(1, "Expecting 'listen': %s", lp);
 		if (!strcmp(faststring_peek(word), "listen")) {
+			fprintf(stderr, "DEBUG: new listening janitor\n");
 			faststring_free(word);
 			word = get_word((const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))
@@ -371,7 +421,22 @@ read_conf(const char *file, struct janitorlist *jlist)
 			faststring_free(word);
 		
 			read_listen_on(janitor, lp);
-		}
+#ifdef SNOOP
+		} else if (!strcmp(faststring_peek(word), "snoop")) {
+			fprintf(stderr, "DEBUG: new snooping janitor\n");
+			faststring_free(word);
+			word = get_word((const char **)&lp);
+			if (word == NULL || strcmp(faststring_peek(word), "on"))
+				syntaxerr(1, "Expecting \"on\" after word "
+				    "\"snoop\": %s",
+				    word == NULL ? lp : faststring_peek(word));
+			faststring_free(word);
+
+			read_snoop_on(janitor, lp);
+#endif
+		} else
+			syntaxerr(1, "Unknown keyword: %s",
+			   faststring_peek(word));
 
 		if (SLIST_EMPTY(jlist)) {
 			SLIST_INSERT_HEAD(jlist, janitor, next);
