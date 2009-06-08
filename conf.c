@@ -32,10 +32,11 @@ static const char *filename;
 #define	JANITOR_SYNTAX	    \
     "Syntax:\n" \
     "  listen <ip>:<port>/<proto> [modifiers]\n" \
+    "  \\t\tmax rate: <count>/<interval>	    - MANDATORY\n" \
+    "  \\t\ton dup: <'exec'|'ignore'|'reset'>\n" \
+    "  \\t\taction at <interval>: <action>\n" \
     "  \\t\taction at <interval>: <action>\n" \
     "  ...\n" \
-    "Modifiers:\n" \
-    "  rate <max>/<interval>	    - Limit janitor use (MANDATORY)\n" \
     "Interval:\n" \
     "  <integer>[smhdw]\n"
 
@@ -270,6 +271,34 @@ read_property(struct janitor *janitor, const char *lp)
 			    lp);
 
 		parse_rate(janitor, &lp);
+
+	/* on dup */
+	} else if (!strcmp(faststring_peek(word), "on")) {
+		faststring_free(word);
+		word = get_word(&lp);
+		if (word == NULL || strcmp(faststring_peek(word), "dup"))
+			syntaxerr(1, "Expecting \"dup\" after word \"on\": %s",
+			    word == NULL ? lp : faststring_peek(word));
+
+		if (-1 == get_punct(&lp, ':'))
+			syntaxerr(1, "Expected ':' after \"on dup\": %s", lp);
+
+		faststring_free(word);
+		word = get_word(&lp);
+		if (word == NULL)
+			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
+			    "\"reset\" after \"on dup:\": %s", lp);
+		if (!strcmp(faststring_peek(word), "exec")) {
+			janitor->dup = DUP_EXEC;
+		} else if (!strcmp(faststring_peek(word), "ignore")) {
+			janitor->dup = DUP_IGNORE;
+		} else if (!strcmp(faststring_peek(word), "reset")) {
+			janitor->dup = DUP_RESET;
+		} else
+			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
+			    "\"reset\" after \"on dup:\": %s",
+			    faststring_peek(word));
+
 	} else
 		syntaxerr(1, "Unexpected property name: %s", lp0);
 
@@ -402,6 +431,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 		SLIST_NEXT(janitor, next) = NULL;
 		janitor->line = linecount;
 		janitor->usecount = 0;
+		janitor->dup = DUP_EXEC;
 		janitor->uswheelsz = 0;
 		janitor->usmax = 0;
 		janitor->uscur = 0;

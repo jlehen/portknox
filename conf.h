@@ -18,7 +18,7 @@ struct janitor {
 	SLIST_ENTRY(janitor) next;
 
 	int line;
-	
+
 	enum {
 		LISTENING_JANITOR,
 #ifdef SNOOP
@@ -45,6 +45,12 @@ struct janitor {
 	int sock;
 	struct actionlist actions;
 	unsigned usecount;		/* Number of janitor use so far */
+
+	enum {
+		DUP_EXEC,		/* Execute anyway */
+		DUP_IGNORE,		/* Ignore the request */
+		DUP_RESET		/* Reset pending tasks timeouts */
+	} dup;
 
 	/* Usage wheel. */
 	short *uswheel;
