@@ -1,9 +1,11 @@
 #define	_ISOC99_SOURCE
 #define	_BSD_SOURCE
+#define _GNU_SOURCE
 #include <sys/types.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -21,6 +23,10 @@
 
 #ifdef DMALLOC
 #include <dmalloc.h>
+#endif
+
+#ifdef SNOOP
+#include <pcap.h>
 #endif
 
 #define	TIMEOUT_WHEEL_SIZE	5
@@ -228,37 +234,64 @@ tend(struct janitor *janitor)
 	char buf[1], ip[NI_MAXHOST];
 	char *cmd;
 	struct action *action;
+#ifdef SNOOP
+	const u_char *pkt;
+	struct in_addr inaddr;
+	struct pcap_pkthdr *pkthdr;
+#endif
 
 	/*
 	 * Get IP address.
 	 */
-	fprintf(stderr, "DEBUG: activity on janitor %p\n", janitor);
-	sinlen = sizeof (sin);
-	if (janitor->addrinfo->ai_protocol == IPPROTO_TCP) {
-		i = accept(janitor->sock, (struct sockaddr *)&sin,
-		    (socklen_t *)&sinlen);
-		if (i == -1) {
-			warn("Could not accept connection");
-			return;
+	switch (janitor->type) {
+	case LISTENING_JANITOR:
+		fprintf(stderr, "DEBUG: activity on listening janitor %p\n",
+		    janitor);
+		sinlen = sizeof (sin);
+		if (janitor->u.listen.addrinfo->ai_protocol == IPPROTO_TCP) {
+			i = accept(janitor->sock, (struct sockaddr *)&sin,
+			    (socklen_t *)&sinlen);
+			if (i == -1) {
+				warn("Could not accept connection");
+				return;
+			}
+			if (shutdown(i, SHUT_RDWR) == -1)
+				warn("Could not shutdown connection");
+			if (close(i) == -1)
+				warn("Could not close socket");
+		} else {
+			i = recvfrom(janitor->sock, buf, 1, 0,
+			    (struct sockaddr *)&sin, (socklen_t *)&sinlen);
+			if (i == -1) {
+				warn("Could not receive datagram");
+				return;
+			}
 		}
-		if (shutdown(i, SHUT_RDWR) == -1)
-			warn("Could not shutdown connection");
-		if (close(i) == -1)
-			warn("Could not close socket");
-	} else {
-		i = recvfrom(janitor->sock, buf, 1, 0,
-		    (struct sockaddr *)&sin, (socklen_t *)&sinlen);
-		if (i == -1) {
-			warn("Could not receive datagram");
-			return;
-		}
-	}
 
-	error = getnameinfo((struct sockaddr *)&sin, sizeof (sin),
-	    ip, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
-	if (error != 0) {
-		warnx("Could not resolve hostname: %s", gai_strerror(error));
-		return;
+		error = getnameinfo((struct sockaddr *)&sin, sizeof (sin),
+		    ip, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+		if (error != 0) {
+			warnx("Could not resolve hostname: %s",
+			    gai_strerror(error));
+			return;
+		}
+		break;
+#ifdef SNOOP
+	case SNOOPING_JANITOR:
+		fprintf(stderr, "DEBUG: activity on snooping janitor %p\n",
+		    janitor);
+		/* Cannot return 0. */
+		if (-1 == pcap_next_ex(janitor->u.snoop.pcap, &pkthdr, &pkt)) {
+			warnx("Could read packet: %s",
+			    pcap_geterr(janitor->u.snoop.pcap));
+			return;
+		}
+/* Ethernet header len + offset in IP header */
+#define	SRCIP_OFFSET	14 + 12
+		memcpy(&inaddr, pkt + SRCIP_OFFSET, sizeof (inaddr));
+		strcpy(ip, inet_ntoa(inaddr));
+		break;
+#endif
 	}
 
 	/*
@@ -298,6 +331,10 @@ main(int ac, char *av[])
 	struct action *action, *tmpaction;
 	int jcount, i, s, fdmax;
 	struct addrinfo *ai;
+#ifdef SNOOP
+	pcap_t *pcapp;
+	char pcaperr[PCAP_ERRBUF_SIZE];
+#endif
 	fd_set fds_, fds;
 
 	sa.sa_handler = &quit;
@@ -310,25 +347,56 @@ main(int ac, char *av[])
 
 	fdmax = 0;
 	SLIST_FOREACH(jp, &janitors, next) {
-		ai = jp->addrinfo;
-		s = socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
-		if (s == -1)
-			err(2, "socket");
-		if (!strcmp(jp->proto, "tcp")) {
-			i = 1;
-			if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i,
-			    sizeof (i)) == -1)
-				err(2, "setsockopt");
+		switch (jp->type) {
+		case LISTENING_JANITOR:
+			ai = jp->u.listen.addrinfo;
+			s = socket(ai->ai_family, ai->ai_socktype,
+			    ai->ai_protocol);
+			if (s == -1)
+				err(2, "socket");
+			if (!strcmp(jp->u.listen.proto, "tcp")) {
+				i = 1;
+				if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i,
+				    sizeof (i)) == -1)
+					err(2, "setsockopt");
+			}
+			if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
+				err(2, "bind");
+			if (!strcmp(jp->u.listen.proto, "tcp"))
+				if (listen(s, 5) == -1)
+					err(2, "listen");
+			jp->sock = s;
+			break;
+#ifdef SNOOP
+		case SNOOPING_JANITOR:
+			pcapp = pcap_open_live(jp->u.snoop.iface, 1518, 0, 50,
+			    pcaperr);
+			if (pcapp == NULL)
+				errx(2, "pcap_open_live(%s): %s",
+				    jp->u.snoop.iface, pcaperr);
+			if (pcap_datalink(pcapp) != DLT_EN10MB)
+				errx(2, "%s is not ethernet",
+				    jp->u.snoop.iface);
+			if (-1 == pcap_compile(pcapp, &jp->u.snoop.bpfpg,
+			    jp->u.snoop.filter, 0, 0))
+				errx(2, "Couldn't compile BPF filter: %s",
+				    jp->u.snoop.filter);
+			if (-1 == pcap_setfilter(pcapp, &jp->u.snoop.bpfpg))
+				errx(2, "pcap_setfilter: %s",
+				    pcap_geterr(pcapp));
+			if (-1 == pcap_setdirection(pcapp, PCAP_D_IN))
+				errx(2, "pcap_setdirection: %s", pcaperr);
+			/*
+			if (-1 == pcap_setnonblock(pcapp, 1, pcaperr))
+				errx(2, "pcap_setnonblock: %s", pcaperr);
+			*/
+			jp->u.snoop.pcap = pcapp;
+			jp->sock = pcap_get_selectable_fd(pcapp);
+			break;
+#endif
 		}
-		if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
-			err(2, "bind");
-		if (!strcmp(jp->proto, "tcp"))
-			if (listen(s, 5) == -1)
-				err(2, "listen");
-		jp->sock = s;
-
-		if (s > fdmax)
-			fdmax = s;
+		if (jp->sock > fdmax)
+			fdmax = jp->sock;
 	}
 
 	sigemptyset(&alrm_sigset);
@@ -348,8 +416,10 @@ main(int ac, char *av[])
 
 	/* Main loop. */
 	FD_ZERO(&fds_);
-	SLIST_FOREACH(jp, &janitors, next)
+	SLIST_FOREACH(jp, &janitors, next) {
+		fprintf(stderr, "DEBUG: selecting on fd %d\n", jp->sock);
 		FD_SET(jp->sock, &fds_);
+	}
 
 	while (!mustquit) {
 		/* Handle callouts. */
@@ -379,18 +449,31 @@ main(int ac, char *av[])
 
 	alarm(0);
 	SLIST_FOREACH_SAFE(jp, &janitors, next, tmpjp) {
-		myfree(jp->ip);
-		myfree(jp->port);
-		myfree(jp->proto);
+		switch (jp->type) {
+		case LISTENING_JANITOR:
+			myfree(jp->u.listen.ip);
+			myfree(jp->u.listen.port);
+			myfree(jp->u.listen.proto);
+			/*
+			myfree(jp->addrinfo->ai_addr);
+			myfree(jp->addrinfo->ai_canonname);
+			*/
+			myfree(jp->u.listen.addrinfo);
+			shutdown(jp->sock, SHUT_RDWR);
+			close(jp->sock);
+			break;
+#ifdef SNOOP
+		case SNOOPING_JANITOR:
+			myfree(jp->u.snoop.iface);
+			myfree(jp->u.snoop.filter);
+			pcap_close(jp->u.snoop.pcap);
+			break;
+#endif
+		}
 		SLIST_FOREACH_SAFE(action, &jp->actions, next, tmpaction) {
 			myfree(action->cmd);
 			myfree(action);
-		}
-		/*
-		myfree(jp->addrinfo->ai_addr);
-		myfree(jp->addrinfo->ai_canonname);
-		*/
-		myfree(jp->addrinfo);
+			}
 		myfree(jp);
 	}
 	LIST_FOREACH_SAFE(tp, &tasks_todo, wheel, tmptp) {
