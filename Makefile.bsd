@@ -2,8 +2,15 @@ CFLAGS+= -Wall -W -g3
 SRCS= main.c conf.c faststring.c util.c
 OBJS= ${SRCS:.c=.o}
 
-#CFLAGS+= -I/usr/local/include -DDMALLOC -DDMALLOC_FUNC_CHECK
-#LDFLAGS+= -L/usr/local/lib -ldmalloc
+.ifdef DMALLOC
+CFLAGS+= -I/usr/local/include -DDMALLOC -DDMALLOC_FUNC_CHECK
+LDFLAGS+= -L/usr/local/lib -ldmalloc
+.endif
+
+.ifdef SNOOP
+CFLAGS+= -DSNOOP=1
+LDFLAGS+= -lpcap
+.endif
 
 all: portknox
 
