@@ -161,7 +161,6 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	/*
 	fprintf(stderr, "DEBUG: schedule task, tick %d, timeout %d, expire %d, slot %d\n", curtick, timeout, task->tick, slot);
 	*/
-	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 
 	prevtp = NULL;
 	LIST_FOREACH(tp, &timeout_wheel[slot], wheel) {
@@ -179,8 +178,6 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	else
 		LIST_NEXT(prevtp, wheel) = task;
 	LIST_NEXT(task, wheel) = tp;
-
-	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 }
 
 void
@@ -307,7 +304,6 @@ tend(struct janitor *janitor)
 	janitor->uscur++;
 	fprintf(stderr, "DEBUG: current usage slot %d: %d, total usage: %d/%d\n",
 		slot, janitor->uswheel[slot], janitor->uscur, janitor->usmax);
-	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 
 	/*
 	 * Perform and schedule actions.
@@ -319,6 +315,7 @@ tend(struct janitor *janitor)
 		else
 			schedule(action->timeout + 1, runcallout, cmd);
 	}
+	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 	janitor->usecount++;
 }
 
