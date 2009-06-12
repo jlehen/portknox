@@ -6,6 +6,50 @@
 #include <pcap.h>
 #endif
 
+struct ushashbucket;
+
+/*
+ * Pending task for a janitor.
+ */
+struct task {
+	/* Used in timeout wheel. */
+	LIST_ENTRY(task) ticklist;
+	/* Used in usage hash bucket. */
+	TAILQ_ENTRY(task) siblinglist;
+
+	/* Hash bucket the task belongs to. */
+	struct ushashbucket *ushashbucket;
+	/* Janitor the task relates to. */
+	struct janitor *janitor;
+
+	unsigned int tick;
+	/* When initial timeout expires, reschedule if delay > 0. */
+	unsigned int delay;
+
+	void (*func)(void *);
+	void *arg; 
+};
+
+LIST_HEAD(tasklist, task);
+
+
+/*
+ * Usage hash bucket, mapping IP to tasks.
+ * Not use or even allocated if dup == DUP_EXEC.
+ */
+struct ushashbucket {
+	LIST_ENTRY(ushashbucket) slotlist;
+	uint32_t ip;
+	uint16_t hash;
+	TAILQ_HEAD(, task) tasks;
+};
+
+LIST_HEAD(ushashslot, ushashbucket);
+
+
+/*
+ * Actions described in the configuration file.
+ */
 struct action {
 	SLIST_ENTRY(action) next;
 	int timeout;
@@ -14,6 +58,10 @@ struct action {
 
 SLIST_HEAD(actionlist, action);
 
+
+/*
+ * Janitor.
+ */
 struct janitor {
 	SLIST_ENTRY(janitor) next;
 
@@ -46,14 +94,19 @@ struct janitor {
 	struct actionlist actions;
 	unsigned usecount;		/* Number of janitor use so far */
 
+	/* Behaviour on duplicate request. */
 	enum {
 		DUP_EXEC,		/* Execute anyway */
 		DUP_IGNORE,		/* Ignore the request */
 		DUP_RESET		/* Reset pending tasks timeouts */
 	} dup;
 
+	/* Usage hash. */
+	int ushashsz;
+	struct ushashslot *ushash;
+
 	/* Usage wheel. */
-	short *uswheel;
+	int *uswheel;
 	int uswheelsz;
 	int usmax;
 	int uscur;

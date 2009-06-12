@@ -31,15 +31,6 @@
 
 #define	TIMEOUT_WHEEL_SIZE	5
 
-struct task {
-	LIST_ENTRY(task) wheel;
-	unsigned int tick;
-	void (*func)(void *);
-	void *arg; 
-};
-
-LIST_HEAD(tasklist, task);
-
 static struct janitorlist janitors;
 static struct tasklist timeout_wheel[TIMEOUT_WHEEL_SIZE];
 static struct tasklist tasks_todo;
@@ -54,6 +45,27 @@ quit(int s __attribute__ ((unused)))
 	mustquit = 1;
 }
 
+uint16_t
+hash(const char *s)
+{
+	uint16_t h;
+	uint16_t a, b;
+
+	h = 0xB73F;
+	a = 0x82;
+	b = 0x53 << 8;
+	while (*s) {
+		h = (h << 5) + *s++;
+		a = h >> 7;
+		b = h << 11;
+		h = (h ^ b) >> 2 ^ a;
+	}
+	return h;
+}
+
+/*
+ * Fork and split command into argument vector in child, then exec.
+ */
 void
 run(char *cmd)
 {
@@ -147,23 +159,36 @@ expand(const char *cmd, const char *ip, unsigned count)
 }
 
 void
-schedule(int timeout, void (*func)(void *), void *arg)
+schedule(int timeout, struct ushashbucket *ushbp, struct janitor *jp,
+    void (*func)(void *), void *arg)
 {
 	struct task *task, *tp, *prevtp;
 	int slot;
 
 	task = mymalloc(sizeof (*task), "struct task");
+	task->ushashbucket = ushbp;
+	task->janitor = jp;
 	task->tick = curtick + timeout;
 	task->func = func;
 	task->arg = arg;
 
+	/*
+	 * Insert in usage hash.
+	 */
+	if (ushbp != NULL)
+		/* Actions are sorted by timeout in struct janitor. */
+		TAILQ_INSERT_TAIL(&ushbp->tasks, task, siblinglist);
+
+	/*
+	 * Insert in timeout wheel.
+	 */
 	slot = task->tick % TIMEOUT_WHEEL_SIZE;
 	/*
 	fprintf(stderr, "DEBUG: schedule task, tick %d, timeout %d, expire %d, slot %d\n", curtick, timeout, task->tick, slot);
 	*/
 
 	prevtp = NULL;
-	LIST_FOREACH(tp, &timeout_wheel[slot], wheel) {
+	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
 		if (tp == NULL)
 			break;
 		if (tp->tick > task->tick)
@@ -176,8 +201,8 @@ schedule(int timeout, void (*func)(void *), void *arg)
 	if (prevtp == NULL)
 		LIST_FIRST(&timeout_wheel[slot]) = task;
 	else
-		LIST_NEXT(prevtp, wheel) = task;
-	LIST_NEXT(task, wheel) = tp;
+		LIST_NEXT(prevtp, ticklist) = task;
+	LIST_NEXT(task, ticklist) = tp;
 }
 
 void
@@ -196,14 +221,14 @@ tick()
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	prevtp = NULL;
 	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, LIST_FIRST(&timeout_wheel[slot]));
-	LIST_FOREACH(tp, &timeout_wheel[slot], wheel) {
+	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
 		if (tp->tick > curtick)
 			break;
 		prevtp = tp;
 	}
 	fprintf(stderr, "DEBUG: alarm, prev task %p, next task %p\n", prevtp, tp);
 	if (prevtp != NULL) {
-		LIST_NEXT(prevtp, wheel) = NULL;
+		LIST_NEXT(prevtp, ticklist) = NULL;
 		LIST_FIRST(&tasks_todo) = LIST_FIRST(&timeout_wheel[slot]);
 		LIST_FIRST(&timeout_wheel[slot]) = tp;
 	}
@@ -228,14 +253,21 @@ tend(struct janitor *janitor)
 	struct sockaddr_in sin;
 	socklen_t sinlen;
 	int i, slot, error;
-	char buf[1], ip[NI_MAXHOST];
+	char buf[1], ipstr[NI_MAXHOST];
+	uint32_t ip;
 	char *cmd;
 	struct action *action;
+	struct ushashbucket *ushbucket;
+	uint16_t hval;
 #ifdef SNOOP
 	const u_char *pkt;
 	struct in_addr inaddr;
 	struct pcap_pkthdr *pkthdr;
 #endif
+
+	/* Shutdown warnings. */
+	ip = 0;
+	ushbucket = NULL;
 
 	/*
 	 * Get IP address.
@@ -265,8 +297,9 @@ tend(struct janitor *janitor)
 			}
 		}
 
+		ip = sin.sin_addr.s_addr;
 		error = getnameinfo((struct sockaddr *)&sin, sizeof (sin),
-		    ip, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
+		    ipstr, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
 		if (error != 0) {
 			warnx("Could not resolve hostname: %s",
 			    gai_strerror(error));
@@ -286,20 +319,48 @@ tend(struct janitor *janitor)
 /* Ethernet header len + offset in IP header */
 #define	SRCIP_OFFSET	14 + 12
 		memcpy(&inaddr, pkt + SRCIP_OFFSET, sizeof (inaddr));
-		strcpy(ip, inet_ntoa(inaddr));
+		ip = inaddr.s_addr;
+		strcpy(ipstr, inet_ntoa(inaddr));
 		break;
 #endif
 	}
 
 	/*
-	 * Check max usage.
+	 * Check usage wheel and usage hash for dup requests.
 	 */
 	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
-	slot = curtick % janitor->uswheelsz;
 	if (janitor->uscur == janitor->usmax) {
-		warnx("Max usage reached, can't fulfill request from %s", ip);
+		warnx("Max usage reached, can't fulfill request from %s",ipstr);
 		return;
 	}
+
+	switch (janitor->dup) {
+	case DUP_EXEC:
+		ushbucket = NULL;
+		break;
+
+	case DUP_IGNORE:
+		hval = hash(ipstr);
+		slot = hval % janitor->ushashsz;
+
+		LIST_FOREACH(ushbucket, &janitor->ushash[slot], slotlist)
+			if (ushbucket->ip == ip)
+				break;
+		if (ushbucket != NULL) {
+			warnx("Ignore dup request from %s", ipstr);
+			sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
+			return;
+		}
+
+		ushbucket = mymalloc(sizeof (*ushbucket), "usage hash bucket");
+		ushbucket->ip = ip;
+		ushbucket->hash = hval;
+		TAILQ_INIT(&ushbucket->tasks);
+		LIST_INSERT_HEAD(&janitor->ushash[slot], ushbucket, slotlist);
+		break;
+	}
+
+	slot = curtick % janitor->uswheelsz;
 	janitor->uswheel[slot]++;
 	janitor->uscur++;
 	fprintf(stderr, "DEBUG: current usage slot %d: %d, total usage: %d/%d\n",
@@ -309,11 +370,12 @@ tend(struct janitor *janitor)
 	 * Perform and schedule actions.
 	 */
 	SLIST_FOREACH(action, &janitor->actions, next) {
-		cmd = expand(action->cmd, ip, janitor->usecount);
+		cmd = expand(action->cmd, ipstr, janitor->usecount);
 		if (action->timeout == 0)
 			runcallout(cmd);
 		else
-			schedule(action->timeout + 1, runcallout, cmd);
+			schedule(action->timeout + 1, ushbucket, janitor,
+			    runcallout, cmd);
 	}
 	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 	janitor->usecount++;
@@ -326,7 +388,7 @@ main(int ac, char *av[])
 	struct janitor *jp, *tmpjp;
 	struct task *tp, *tmptp;
 	struct action *action, *tmpaction;
-	int jcount, i, s, fdmax;
+	int jcount, i, s, fdmax, slot;
 	struct addrinfo *ai;
 #ifdef SNOOP
 	pcap_t *pcapp;
@@ -402,6 +464,7 @@ main(int ac, char *av[])
 	/* Timeout wheel. */
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++)
 		LIST_FIRST(&timeout_wheel[i]) = NULL;
+	LIST_FIRST(&tasks_todo) = NULL;
 
 	sa.sa_handler = &tick;
 	sa.sa_flags = 0;
@@ -421,8 +484,17 @@ main(int ac, char *av[])
 	while (!mustquit) {
 		/* Handle callouts. */
 		sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
-		LIST_FOREACH_SAFE(tp, &tasks_todo, wheel, tmptp) {
+		LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
 			(*tp->func)(tp->arg);
+			
+			TAILQ_REMOVE(&tp->ushashbucket->tasks, tp, siblinglist);
+			if (TAILQ_EMPTY(&tp->ushashbucket->tasks)) {
+				jp = tp->janitor;
+				slot = tp->ushashbucket->hash % jp->ushashsz;
+				LIST_REMOVE(tp->ushashbucket, slotlist);
+				myfree(tp->ushashbucket);
+			}
+
 			myfree(tp);
 		}
 		LIST_FIRST(&tasks_todo) = NULL;
@@ -473,12 +545,12 @@ main(int ac, char *av[])
 			}
 		myfree(jp);
 	}
-	LIST_FOREACH_SAFE(tp, &tasks_todo, wheel, tmptp) {
+	LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
 		myfree(tp->arg);
 		myfree(tp);
 	}
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++) {
-		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], wheel, tmptp) {
+		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], ticklist, tmptp) {
 			myfree(tp->arg);
 			myfree(tp);
 		}

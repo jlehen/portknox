@@ -42,6 +42,23 @@ static const char *filename;
 
 #define	EAT_BLANKS(p)	    do { while (isblank(*(p))) { (p)++; } } while (0)
 
+/* Some random prime numbers. */
+static int primes[] = { 7, 17, 31, 43, 59, 113, 163, 191, 223, 257, 293, 0 };
+
+static int
+choose_prime(int n)
+{
+	int *p;
+
+	for (p = primes; *p != 0; p++)
+		if (*p > n)
+			break;
+	if (p != primes)
+		p--;
+	return *p;
+}
+
+
 static void
 syntaxerr(int status, const char *fmt, ...)
 {
@@ -221,7 +238,7 @@ read_property(struct janitor *janitor, const char *lp)
 	faststring *word;
 	struct action *action, *ap;
 	const char *lp0;
-	int timeout;
+	int timeout, prime;
 
 	lp0 = lp;
 	word = get_word(&lp);
@@ -249,12 +266,16 @@ read_property(struct janitor *janitor, const char *lp)
 		action->cmd = strdup(lp);
 		SLIST_NEXT(action, next) = NULL;
 
-		if (SLIST_EMPTY(&janitor->actions))
+		/* Sort list by timeout. */
+		ap = SLIST_FIRST(&janitor->actions);
+		if (SLIST_EMPTY(&janitor->actions) ||
+		    action->timeout < ap->timeout)
 			SLIST_INSERT_HEAD(&janitor->actions, action, next);
 		else {
-			ap = SLIST_FIRST(&janitor->actions);
-			while (SLIST_NEXT(ap, next) != NULL)
+			while (SLIST_NEXT(ap, next) != NULL &&
+			    action->timeout > SLIST_NEXT(ap, next)->timeout)
 				ap = SLIST_NEXT(ap, next);
+
 			SLIST_INSERT_AFTER(ap, action, next);
 		}
 
@@ -288,17 +309,26 @@ read_property(struct janitor *janitor, const char *lp)
 		if (word == NULL)
 			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
 			    "\"reset\" after \"on dup:\": %s", lp);
-		if (!strcmp(faststring_peek(word), "exec")) {
+		if (!strcmp(faststring_peek(word), "exec"))
 			janitor->dup = DUP_EXEC;
-		} else if (!strcmp(faststring_peek(word), "ignore")) {
+		else if (!strcmp(faststring_peek(word), "ignore"))
 			janitor->dup = DUP_IGNORE;
-		} else if (!strcmp(faststring_peek(word), "reset")) {
+		else if (!strcmp(faststring_peek(word), "reset"))
 			janitor->dup = DUP_RESET;
-		} else
+		else
 			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
 			    "\"reset\" after \"on dup:\": %s",
 			    faststring_peek(word));
 
+		if (janitor->dup == DUP_IGNORE || janitor->dup == DUP_RESET) {
+			prime = choose_prime(janitor->uswheelsz *
+			    janitor->usmax / 10);
+			janitor->ushashsz = prime;
+			janitor->ushash = mymalloc(prime *
+			    sizeof (struct ushashslot), "usage hash slot");
+			for (prime--; prime >= 0; prime--)
+				LIST_INIT(&janitor->ushash[prime]);
+		}
 	} else
 		syntaxerr(1, "Unexpected property name: %s", lp0);
 
@@ -420,11 +450,12 @@ read_conf(const char *file, struct janitorlist *jlist)
 		 */
 		fprintf(stderr, "DEBUG: line to parse: %s\n", lp);
 
-		if (janitor != NULL && janitor->uswheelsz == 0)
-			syntaxerr(1, "Janitor with no max rate");
-
-		if (janitor != NULL && SLIST_EMPTY(&janitor->actions))
-			syntaxerr(1, "Janitor with no action");
+		if (janitor != NULL) {
+			if (janitor->uswheelsz == 0)
+				syntaxerr(1, "Janitor with no max rate");
+			if (SLIST_EMPTY(&janitor->actions))
+				syntaxerr(1, "Janitor with no action");
+		}
 
 		janitor = mymalloc(sizeof (*janitor), "struct janitor");
 		SLIST_INIT(&janitor->actions);
