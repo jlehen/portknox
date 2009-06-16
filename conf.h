@@ -23,8 +23,8 @@ struct task {
 	struct janitor *janitor;
 
 	unsigned int tick;
-	/* When initial timeout expires, reschedule if delay > 0. */
-	unsigned int delay;
+	/* Initial action timeout. */
+	int timeout;
 
 	void (*func)(void *);
 	void *arg; 
