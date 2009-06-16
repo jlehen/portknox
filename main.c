@@ -108,6 +108,9 @@ run(char *cmd)
 	exit(127);
 }
 
+/*
+ * Call run() and free argument.
+ */
 void
 runcallout(void *p)
 {
@@ -116,6 +119,11 @@ runcallout(void *p)
 	myfree(p);
 }
 
+/*
+ * Expand escape characters in string:
+ *     %h -> src ip
+ *     %n -> tending count
+ */
 char *
 expand(const char *cmd, const char *ip, unsigned count)
 {
@@ -158,17 +166,50 @@ expand(const char *cmd, const char *ip, unsigned count)
 	return faststring_export(str);
 }
 
+/*
+ * Schedule a task!
+ */
 void
-schedule(int timeout, struct ushashbucket *ushbp, struct janitor *jp,
+schedule(struct task *task)
+{
+	struct task *tp;
+	int slot;
+
+	/*
+	 * Insert in timeout wheel.
+	 */
+	task->tick = curtick + task->timeout;
+	slot = task->tick % TIMEOUT_WHEEL_SIZE;
+	/*
+	fprintf(stderr, "DEBUG: schedule task, tick %d, timeout %d, expire %d, slot %d\n", curtick, timeout, task->tick, slot);
+	*/
+
+	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
+		if (tp == NULL)
+			break;
+		if (tp->tick > task->tick)
+			break;
+	}
+	if (tp == NULL)
+		LIST_INSERT_HEAD(&timeout_wheel[slot], task, ticklist);
+	else
+		LIST_INSERT_BEFORE(tp, task, ticklist);
+}
+
+/*
+ * Create a task!
+ */
+struct task *
+create_task(int timeout, struct ushashbucket *ushbp, struct janitor *jp,
     void (*func)(void *), void *arg)
 {
-	struct task *task, *tp, *prevtp;
-	int slot;
+	struct task *task;
 
 	task = mymalloc(sizeof (*task), "struct task");
 	task->ushashbucket = ushbp;
 	task->janitor = jp;
-	task->tick = curtick + timeout;
+	task->tick = 0;
+	task->timeout = timeout;
 	task->func = func;
 	task->arg = arg;
 
@@ -179,38 +220,19 @@ schedule(int timeout, struct ushashbucket *ushbp, struct janitor *jp,
 		/* Actions are sorted by timeout in struct janitor. */
 		TAILQ_INSERT_TAIL(&ushbp->tasks, task, siblinglist);
 
-	/*
-	 * Insert in timeout wheel.
-	 */
-	slot = task->tick % TIMEOUT_WHEEL_SIZE;
-	/*
-	fprintf(stderr, "DEBUG: schedule task, tick %d, timeout %d, expire %d, slot %d\n", curtick, timeout, task->tick, slot);
-	*/
-
-	prevtp = NULL;
-	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
-		if (tp == NULL)
-			break;
-		if (tp->tick > task->tick)
-			break;
-		prevtp = tp;
-	}
-	/*
-	fprintf(stderr, "DEBUG: schedule, cur %p, prev %p\n", tp, prevtp);
-	*/
-	if (prevtp == NULL)
-		LIST_FIRST(&timeout_wheel[slot]) = task;
-	else
-		LIST_NEXT(prevtp, ticklist) = task;
-	LIST_NEXT(task, ticklist) = tp;
+	return task;
 }
 
+/*
+ * Execute callouts and rotate janitors' usage wheel.
+ */
 void
 tick()
 {
 	struct task *prevtp, *tp;
 	struct janitor *jp;
 	int slot;
+	int i;
 
 	alarm(1);
 	curtick++;
@@ -221,12 +243,14 @@ tick()
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	prevtp = NULL;
 	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, LIST_FIRST(&timeout_wheel[slot]));
+	i = 0;
 	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
 		if (tp->tick > curtick)
 			break;
 		prevtp = tp;
+		i++;
 	}
-	fprintf(stderr, "DEBUG: alarm, prev task %p, next task %p\n", prevtp, tp);
+	fprintf(stderr, "DEBUG: alarm, %d task(s) to be executed\n", i);
 	if (prevtp != NULL) {
 		LIST_NEXT(prevtp, ticklist) = NULL;
 		LIST_FIRST(&tasks_todo) = LIST_FIRST(&timeout_wheel[slot]);
@@ -241,12 +265,19 @@ tick()
 
 		jp->uscur -= jp->uswheel[slot];
 		jp->uswheel[slot] = 0;
-		fprintf(stderr, "DEBUG: alarm, janitor %p, usage slot %d emptied, total usage: %d\n",
+		fprintf(stderr, "DEBUG: alarm, janitor %p, usage wheel slot %d emptied, total usage: %d\n",
 		    jp, slot, jp->uscur);
 	}
 
 }
 
+/*
+ * Tend the incoming connection:
+ *     - Check max usage;
+ *     - Handle dup requests;
+ *     - Update usage wheel;
+ *     - Perform immediate actions and schedule delayed actions.
+ */
 void
 tend(struct janitor *janitor)
 {
@@ -258,6 +289,7 @@ tend(struct janitor *janitor)
 	char *cmd;
 	struct action *action;
 	struct ushashbucket *ushbucket;
+	struct task *task;
 	uint16_t hval;
 #ifdef SNOOP
 	const u_char *pkt;
@@ -330,7 +362,8 @@ tend(struct janitor *janitor)
 	 */
 	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 	if (janitor->uscur == janitor->usmax) {
-		warnx("Max usage reached, can't fulfill request from %s",ipstr);
+		fprintf(stderr, "Max usage reached, can't fulfill request "
+		    "from %s\n", ipstr);
 		return;
 	}
 
@@ -340,25 +373,41 @@ tend(struct janitor *janitor)
 		break;
 
 	case DUP_IGNORE:
+	case DUP_RESET:
 		hval = hash(ipstr);
 		slot = hval % janitor->ushashsz;
 
 		LIST_FOREACH(ushbucket, &janitor->ushash[slot], slotlist)
 			if (ushbucket->ip == ip)
 				break;
-		if (ushbucket != NULL) {
-			warnx("Ignore dup request from %s", ipstr);
+
+		if (ushbucket == NULL) {
+			ushbucket = mymalloc(sizeof (*ushbucket),
+			    "usage hash bucket");
+			ushbucket->ip = ip;
+			ushbucket->hash = hval;
+			TAILQ_INIT(&ushbucket->tasks);
+			LIST_INSERT_HEAD(&janitor->ushash[slot], ushbucket,
+			    slotlist);
+			break;
+		}
+
+		if (janitor->dup == DUP_IGNORE) {
+			fprintf(stderr, "Ignore dup request from %s\n", ipstr);
 			sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 			return;
 		}
+		/* janitor->dup == DUP_RESET */
+		fprintf(stderr, "Resetting after dup request from %s\n", ipstr);
+		TAILQ_FOREACH(task, &ushbucket->tasks, siblinglist) {
+			LIST_REMOVE(task, ticklist);
+			schedule(task);
+		}
 
-		ushbucket = mymalloc(sizeof (*ushbucket), "usage hash bucket");
-		ushbucket->ip = ip;
-		ushbucket->hash = hval;
-		TAILQ_INIT(&ushbucket->tasks);
-		LIST_INSERT_HEAD(&janitor->ushash[slot], ushbucket, slotlist);
-		break;
+		return;
 	}
+
+	/* DUP_EXEC or no pending tasks for IP address. */
 
 	slot = curtick % janitor->uswheelsz;
 	janitor->uswheel[slot]++;
@@ -374,8 +423,8 @@ tend(struct janitor *janitor)
 		if (action->timeout == 0)
 			runcallout(cmd);
 		else
-			schedule(action->timeout + 1, ushbucket, janitor,
-			    runcallout, cmd);
+			schedule(create_task(action->timeout + 1, ushbucket,
+			    janitor, runcallout, cmd));
 	}
 	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 	janitor->usecount++;
@@ -463,8 +512,8 @@ main(int ac, char *av[])
 
 	/* Timeout wheel. */
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++)
-		LIST_FIRST(&timeout_wheel[i]) = NULL;
-	LIST_FIRST(&tasks_todo) = NULL;
+		LIST_INIT(&timeout_wheel[i]);
+	LIST_INIT(&tasks_todo);
 
 	sa.sa_handler = &tick;
 	sa.sa_flags = 0;
@@ -477,7 +526,7 @@ main(int ac, char *av[])
 	/* Main loop. */
 	FD_ZERO(&fds_);
 	SLIST_FOREACH(jp, &janitors, next) {
-		fprintf(stderr, "DEBUG: selecting on fd %d\n", jp->sock);
+		fprintf(stderr, "DEBUG: janitor %p on fd %d\n", jp, jp->sock);
 		FD_SET(jp->sock, &fds_);
 	}
 
@@ -487,17 +536,21 @@ main(int ac, char *av[])
 		LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
 			(*tp->func)(tp->arg);
 			
-			TAILQ_REMOVE(&tp->ushashbucket->tasks, tp, siblinglist);
-			if (TAILQ_EMPTY(&tp->ushashbucket->tasks)) {
-				jp = tp->janitor;
-				slot = tp->ushashbucket->hash % jp->ushashsz;
-				LIST_REMOVE(tp->ushashbucket, slotlist);
-				myfree(tp->ushashbucket);
+			jp = tp->janitor;
+			if (jp->dup == DUP_IGNORE || jp->dup == DUP_RESET) {
+				TAILQ_REMOVE(&tp->ushashbucket->tasks, tp,
+				    siblinglist);
+				if (TAILQ_EMPTY(&tp->ushashbucket->tasks)) {
+					slot = tp->ushashbucket->hash %
+					    jp->ushashsz;
+					LIST_REMOVE(tp->ushashbucket, slotlist);
+					myfree(tp->ushashbucket);
+				}
 			}
 
 			myfree(tp);
 		}
-		LIST_FIRST(&tasks_todo) = NULL;
+		LIST_INIT(&tasks_todo);
 		sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 
 		fds = fds_;
