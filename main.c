@@ -537,6 +537,7 @@ main(int ac, char *av[])
 			(*tp->func)(tp->arg);
 			
 			jp = tp->janitor;
+			/* Remove task from usage hash once performed. */
 			if (jp->dup == DUP_IGNORE || jp->dup == DUP_RESET) {
 				TAILQ_REMOVE(&tp->ushashbucket->tasks, tp,
 				    siblinglist);
