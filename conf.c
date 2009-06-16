@@ -463,6 +463,8 @@ read_conf(const char *file, struct janitorlist *jlist)
 		janitor->line = linecount;
 		janitor->usecount = 0;
 		janitor->dup = DUP_EXEC;
+		janitor->ushashsz = 0;
+		janitor->ushash = NULL;
 		janitor->uswheelsz = 0;
 		janitor->usmax = 0;
 		janitor->uscur = 0;
