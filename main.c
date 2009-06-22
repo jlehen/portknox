@@ -9,16 +9,20 @@
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
+#include <libgen.h>
 #include <limits.h>
 #include <netdb.h>
 #include <signal.h>
-#include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <stdlib.h>
+#include <string.h>
+#include <syslog.h>
 #include <unistd.h>
 #include "conf.h"
 #include "faststring.h"
 #include "freebsdqueue.h"
+#include "log.h"
 #include "util.h"
 
 #ifdef DMALLOC
@@ -29,7 +33,7 @@
 #include <pcap.h>
 #endif
 
-#define	TIMEOUT_WHEEL_SIZE	5
+#define	TIMEOUT_WHEEL_SIZE	59
 
 static struct janitorlist janitors;
 static struct tasklist timeout_wheel[TIMEOUT_WHEEL_SIZE];
@@ -37,6 +41,64 @@ static struct tasklist tasks_todo;
 static unsigned int curtick;
 static int mustquit = 0;
 static sigset_t alrm_sigset;
+
+static void
+usage(const char *basename)
+{
+
+	fprintf(stderr,
+	    "Usage: %s [-c configfile] [-d] [-h] [-s facility]\n"
+	    "Options:\n"
+	    "  -c	Set config file (defaults to \"portknox.conf\").\n"
+	    "  -d	Issue all syslog messages on stderr as well.\n"
+	    "  -h	Show this help.\n"
+	    "  -s	Set syslog facility.\n"
+	    "Valid facilities: auth, daemon, securiry, user, local0 "
+	    "... local7.\n",
+	    basename);
+}
+
+static void
+mylog(int status, int prio, const struct janitor *j, const char *err,
+    const char *fmt, ...)
+{
+	va_list ap;
+	int i;
+	char errbuf[128];	/* Should be enough */
+
+	va_start(ap, fmt);
+	i = vsnprintf(errbuf, sizeof (errbuf), fmt, ap);
+	va_end(ap);
+	if (j != NULL && err != NULL)
+		syslog(prio, "(janitor %d) %s: %s", j->id, errbuf, err);
+	else if (j != NULL && err == NULL)
+		syslog(prio, "(janitor %d) %s", j->id, errbuf);
+	else if (j == NULL && err != NULL)
+		syslog(prio, "%s: %s", errbuf, err);
+	else /* j == NULL && err == NULL */
+		syslog(prio, "%s", errbuf);
+	if (i >= (int)sizeof (errbuf))
+		syslog(prio, "previous message has been truncated");
+	if (status >= 0)
+		exit(status);
+}
+
+#define	e(s, j, fmt, ...)	\
+    mylog(s, LOG_ERR, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	ex(s, j, fmt, ...)	\
+    mylog(s, LOG_ERR, j, NULL, fmt, ## __VA_ARGS__)
+#define	w(j, fmt, ...)		\
+    mylog(-1, LOG_WARNING, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	wx(j, fmt, ...)		\
+    mylog(-1, LOG_WARNING, j, NULL, fmt, ## __VA_ARGS__)
+#define n(j, fmt, ...)		\
+    mylog(-1, LOG_NOTICE, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	nx(j, fmt, ...)		\
+    mylog(-1, LOG_NOTICE, j, NULL, fmt, ## __VA_ARGS__)
+#define	i(j, fmt, ...)		\
+    mylog(-1, LOG_INFO, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	ix(j, fmt, ...)		\
+    mylog(-1, LOG_INFO, j, NULL, fmt, ## __VA_ARGS__)
 
 void
 quit(int s __attribute__ ((unused)))
@@ -75,7 +137,6 @@ run(char *cmd)
 	struct janitor *jp;
 	pid_t pid;
 
-	fprintf(stderr, "DEBUG: gonna run '%s'\n", (char *)cmd);
 	pid = fork();
 	if (pid == -1) {
 		warn("Can't fork");
@@ -104,7 +165,7 @@ run(char *cmd)
 		close(jp->sock);
 
 	if (execvp(argv[0], argv) == -1)
-		warn("Can't exec %s", argv[0]);
+		w(NULL, "Can't exec '%s'", argv[0]);
 	exit(127);
 }
 
@@ -125,7 +186,7 @@ runcallout(void *p)
  *     %n -> tending count
  */
 char *
-expand(const char *cmd, const char *ip, unsigned count)
+expand(const char *cmd, const char *ip, const struct janitor *j)
 {
 	faststring *str;
 	const char *p;
@@ -150,9 +211,9 @@ expand(const char *cmd, const char *ip, unsigned count)
 			faststring_strcat(str, ip);
 			break;
 		case 'n':
-			(void)asprintf(&countstr, "%u", count);
+			(void)asprintf(&countstr, "%u", j->usecount);
 			if (countstr == NULL)
-				err(2, "String expansion");
+				e(2, j, "Command string expansion");
 			faststring_strcat(str, countstr);
 			myfree(countstr);
 			break;
@@ -180,9 +241,6 @@ schedule(struct task *task)
 	 */
 	task->tick = curtick + task->timeout;
 	slot = task->tick % TIMEOUT_WHEEL_SIZE;
-	/*
-	fprintf(stderr, "DEBUG: schedule task, tick %d, timeout %d, expire %d, slot %d\n", curtick, timeout, task->tick, slot);
-	*/
 
 	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
 		if (tp == NULL)
@@ -306,25 +364,23 @@ tend(struct janitor *janitor)
 	 */
 	switch (janitor->type) {
 	case LISTENING_JANITOR:
-		fprintf(stderr, "DEBUG: activity on listening janitor %p\n",
-		    janitor);
 		sinlen = sizeof (sin);
 		if (janitor->u.listen.addrinfo->ai_protocol == IPPROTO_TCP) {
 			i = accept(janitor->sock, (struct sockaddr *)&sin,
 			    (socklen_t *)&sinlen);
 			if (i == -1) {
-				warn("Could not accept connection");
+				w(janitor, "Could not accept connection");
 				return;
 			}
 			if (shutdown(i, SHUT_RDWR) == -1)
-				warn("Could not shutdown connection");
+				w(janitor, "Could not shutdown connection");
 			if (close(i) == -1)
-				warn("Could not close socket");
+				w(janitor, "Could not close socket");
 		} else {
 			i = recvfrom(janitor->sock, buf, 1, 0,
 			    (struct sockaddr *)&sin, (socklen_t *)&sinlen);
 			if (i == -1) {
-				warn("Could not receive datagram");
+				w(janitor, "Could not receive datagram");
 				return;
 			}
 		}
@@ -333,18 +389,16 @@ tend(struct janitor *janitor)
 		error = getnameinfo((struct sockaddr *)&sin, sizeof (sin),
 		    ipstr, NI_MAXHOST, NULL, 0, NI_NUMERICHOST);
 		if (error != 0) {
-			warnx("Could not resolve hostname: %s",
+			wx(janitor, "Could not resolve hostname: %s",
 			    gai_strerror(error));
 			return;
 		}
 		break;
 #ifdef SNOOP
 	case SNOOPING_JANITOR:
-		fprintf(stderr, "DEBUG: activity on snooping janitor %p\n",
-		    janitor);
 		/* Cannot return 0. */
 		if (-1 == pcap_next_ex(janitor->u.snoop.pcap, &pkthdr, &pkt)) {
-			warnx("Could read packet: %s",
+			wx(janitor, "Could snoop packet: %s",
 			    pcap_geterr(janitor->u.snoop.pcap));
 			return;
 		}
@@ -362,8 +416,8 @@ tend(struct janitor *janitor)
 	 */
 	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 	if (janitor->uscur == janitor->usmax) {
-		fprintf(stderr, "Max usage reached, can't fulfill request "
-		    "from %s\n", ipstr);
+		nx(janitor, "Max usage reached, can't fulfill request from %s",
+		    ipstr);
 		return;
 	}
 
@@ -393,12 +447,12 @@ tend(struct janitor *janitor)
 		}
 
 		if (janitor->dup == DUP_IGNORE) {
-			fprintf(stderr, "Ignore dup request from %s\n", ipstr);
+			ix(janitor, "Ignore duplicate request from %s", ipstr);
 			sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 			return;
 		}
 		/* janitor->dup == DUP_RESET */
-		fprintf(stderr, "Resetting after dup request from %s\n", ipstr);
+		ix(janitor, "Resetting after duplicate request from %s", ipstr);
 		TAILQ_FOREACH(task, &ushbucket->tasks, siblinglist) {
 			LIST_REMOVE(task, ticklist);
 			schedule(task);
@@ -407,19 +461,18 @@ tend(struct janitor *janitor)
 		return;
 	}
 
-	/* DUP_EXEC or no pending tasks for IP address. */
+	/*
+	 * From here onward, DUP_EXEC or no pending tasks for IP address.
+	 */
+	ix(janitor, "Tending %s", ipstr);
 
 	slot = curtick % janitor->uswheelsz;
 	janitor->uswheel[slot]++;
 	janitor->uscur++;
-	fprintf(stderr, "DEBUG: current usage slot %d: %d, total usage: %d/%d\n",
-		slot, janitor->uswheel[slot], janitor->uscur, janitor->usmax);
 
-	/*
-	 * Perform and schedule actions.
-	 */
+	/* Perform and schedule actions.  */
 	SLIST_FOREACH(action, &janitor->actions, next) {
-		cmd = expand(action->cmd, ipstr, janitor->usecount);
+		cmd = expand(action->cmd, ipstr, janitor);
 		if (action->timeout == 0)
 			runcallout(cmd);
 		else
@@ -433,25 +486,57 @@ tend(struct janitor *janitor)
 int
 main(int ac, char *av[])
 {
+	const char *configfile;
 	struct sigaction sa;
 	struct janitor *jp, *tmpjp;
 	struct task *tp, *tmptp;
 	struct action *action, *tmpaction;
-	int jcount, i, s, fdmax, slot;
+	int opt, jcount, i, s, fdmax, slot;
 	struct addrinfo *ai;
+	fd_set fds_, fds;
 #ifdef SNOOP
 	pcap_t *pcapp;
 	char pcaperr[PCAP_ERRBUF_SIZE];
 #endif
-	fd_set fds_, fds;
+
+	configfile = "portknox.conf";
+	while (1) {
+		opt = getopt(ac, av, ":c:dhs:");
+		if (opt == -1)
+			break;
+		switch (opt) {
+		case 'c':
+			configfile = optarg;
+			break;
+		case 'd':
+			setDebug();
+			break;
+		case 'h':
+			usage(basename(av[0]));
+			exit(0);
+			break;
+		case 's':
+			setLogFacility(optarg);
+			break;
+		case ':':
+			fprintf(stderr, "Unknown option '%c'", optopt);
+			usage(basename(av[0]));
+			exit(1);
+			break;
+		}
+	}
+
+	openLog(basename(av[0]));
 
 	sa.sa_handler = &quit;
 	sa.sa_flags = 0;
 	sigemptyset(&sa.sa_mask);
 	if (sigaction(SIGQUIT, &sa, NULL) == -1)
-		err(2, "sigaction");
+		e(2, NULL, "sigaction");
+	if (sigaction(SIGTERM, &sa, NULL) == -1)
+		e(2, NULL, "sigaction");
 
-	jcount = read_conf("portknox.conf", &janitors);
+	jcount = read_conf(configfile, &janitors);
 
 	fdmax = 0;
 	SLIST_FOREACH(jp, &janitors, next) {
@@ -461,18 +546,18 @@ main(int ac, char *av[])
 			s = socket(ai->ai_family, ai->ai_socktype,
 			    ai->ai_protocol);
 			if (s == -1)
-				err(2, "socket");
+				e(2, jp, "socket");
 			if (!strcmp(jp->u.listen.proto, "tcp")) {
 				i = 1;
 				if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i,
 				    sizeof (i)) == -1)
-					err(2, "setsockopt");
+					e(2, jp, "setsockopt");
 			}
 			if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
-				err(2, "bind");
+				e(2, jp, "bind");
 			if (!strcmp(jp->u.listen.proto, "tcp"))
 				if (listen(s, 5) == -1)
-					err(2, "listen");
+					e(2, jp, "listen");
 			jp->sock = s;
 			break;
 #ifdef SNOOP
@@ -480,20 +565,20 @@ main(int ac, char *av[])
 			pcapp = pcap_open_live(jp->u.snoop.iface, 1518, 0, 50,
 			    pcaperr);
 			if (pcapp == NULL)
-				errx(2, "pcap_open_live(%s): %s",
+				ex(2, jp, "pcap_open_live(%s): %s",
 				    jp->u.snoop.iface, pcaperr);
 			if (pcap_datalink(pcapp) != DLT_EN10MB)
-				errx(2, "%s is not ethernet",
+				ex(2, jp, "%s is not ethernet",
 				    jp->u.snoop.iface);
 			if (-1 == pcap_compile(pcapp, &jp->u.snoop.bpfpg,
 			    jp->u.snoop.filter, 0, 0))
-				errx(2, "Couldn't compile BPF filter: %s",
+				ex(2, jp, "Couldn't compile BPF filter: %s",
 				    jp->u.snoop.filter);
 			if (-1 == pcap_setfilter(pcapp, &jp->u.snoop.bpfpg))
-				errx(2, "pcap_setfilter: %s",
+				ex(2, jp, "pcap_setfilter: %s",
 				    pcap_geterr(pcapp));
 			if (-1 == pcap_setdirection(pcapp, PCAP_D_IN))
-				errx(2, "pcap_setdirection: %s", pcaperr);
+				ex(2, jp, "pcap_setdirection: %s", pcaperr);
 			/*
 			if (-1 == pcap_setnonblock(pcapp, 1, pcaperr))
 				errx(2, "pcap_setnonblock: %s", pcaperr);
@@ -519,16 +604,14 @@ main(int ac, char *av[])
 	sa.sa_flags = 0;
 	sigemptyset(&sa.sa_mask);
 	if (sigaction(SIGALRM, &sa, NULL) == -1)
-		err(2, "sigaction");
+		e(2, NULL, "sigaction");
 
 	alarm(1);
 
 	/* Main loop. */
 	FD_ZERO(&fds_);
-	SLIST_FOREACH(jp, &janitors, next) {
-		fprintf(stderr, "DEBUG: janitor %p on fd %d\n", jp, jp->sock);
+	SLIST_FOREACH(jp, &janitors, next)
 		FD_SET(jp->sock, &fds_);
-	}
 
 	while (!mustquit) {
 		/* Handle callouts. */
@@ -559,7 +642,7 @@ main(int ac, char *av[])
 		if (i == -1) {
 			if (errno == EINTR)
 				continue;
-			err(2, "select");
+			e(2, NULL, "select");
 		}
 		SLIST_FOREACH(jp, &janitors, next) {
 			if (FD_ISSET(jp->sock, &fds)) {
@@ -571,16 +654,13 @@ main(int ac, char *av[])
 	}
 
 	alarm(0);
+	nx(NULL, "Exiting");
 	SLIST_FOREACH_SAFE(jp, &janitors, next, tmpjp) {
 		switch (jp->type) {
 		case LISTENING_JANITOR:
 			myfree(jp->u.listen.ip);
 			myfree(jp->u.listen.port);
 			myfree(jp->u.listen.proto);
-			/*
-			myfree(jp->addrinfo->ai_addr);
-			myfree(jp->addrinfo->ai_canonname);
-			*/
 			myfree(jp->u.listen.addrinfo);
 			shutdown(jp->sock, SHUT_RDWR);
 			close(jp->sock);
