@@ -66,6 +66,7 @@ struct janitor {
 	SLIST_ENTRY(janitor) next;
 
 	int line;
+	int id;
 
 	enum {
 		LISTENING_JANITOR,

@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <syslog.h>
 #include "conf.h"
 #include "faststring.h"
 #include "freebsdqueue.h"
@@ -26,6 +27,7 @@
 #include <pcap.h>
 #endif
 
+static int id;
 static int linecount;
 static const char *filename;
 
@@ -70,6 +72,8 @@ syntaxerr(int status, const char *fmt, ...)
 		msg = (char *)fmt;
 	fprintf(stderr, "%s(%d): %s\n", filename, linecount, msg);
 	fprintf(stderr, JANITOR_SYNTAX);
+	syslog(LOG_ERR, "Error in configuration file %s(%d)",
+	    filename, linecount);
 	exit(status);
 }
 
@@ -361,8 +365,8 @@ read_listen_on(struct janitor *janitor, char *lp)
 	janitor->u.listen.proto = strdup(lp);
 
 	fill_addrinfo(janitor);
-	fprintf(stderr, "DEBUG: new janitor %p (%s:%s/%s)\n",
-	    janitor, janitor->u.listen.ip, janitor->u.listen.port,
+	syslog(LOG_NOTICE, "janitor %d, listening on %s:%s/%s",
+	    janitor->id, janitor->u.listen.ip, janitor->u.listen.port,
 	    janitor->u.listen.proto);
 }
 
@@ -399,6 +403,8 @@ read_snoop_on(struct janitor *janitor, char *lp)
 		syntaxerr(1, "Bad BPF filter: %s", pcap_geterr(pcapp));
 	pcap_freecode(&janitor->u.snoop.bpfpg);
 	pcap_close(pcapp);
+	syslog(LOG_NOTICE, "janitor %d, snooping on %s (%s)",
+	    janitor->id, janitor->u.snoop.iface, janitor->u.snoop.filter);
 }
 #endif
 
@@ -418,6 +424,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 		err(1, "%s", filename);
 	SLIST_INIT(jlist);
 	janitor = NULL;
+	id = 0;
 	linecount = 0;
 	jcount = 0;
 	while (1) {
@@ -460,6 +467,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 		janitor = mymalloc(sizeof (*janitor), "struct janitor");
 		SLIST_INIT(&janitor->actions);
 		SLIST_NEXT(janitor, next) = NULL;
+		janitor->id = id++;
 		janitor->line = linecount;
 		janitor->usecount = 0;
 		janitor->dup = DUP_EXEC;
