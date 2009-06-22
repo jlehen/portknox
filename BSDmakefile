@@ -1,5 +1,5 @@
 CFLAGS+= -Wall -W -g3
-SRCS= main.c conf.c faststring.c util.c
+SRCS= main.c conf.c faststring.c util.c log.c
 OBJS= ${SRCS:.c=.o}
 
 .ifdef DMALLOC
