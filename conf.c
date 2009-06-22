@@ -365,7 +365,7 @@ read_listen_on(struct janitor *janitor, char *lp)
 	janitor->u.listen.proto = strdup(lp);
 
 	fill_addrinfo(janitor);
-	syslog(LOG_NOTICE, "janitor %d, listening on %s:%s/%s",
+	syslog(LOG_NOTICE, "(janitor %d) Listening on %s:%s/%s",
 	    janitor->id, janitor->u.listen.ip, janitor->u.listen.port,
 	    janitor->u.listen.proto);
 }
@@ -403,7 +403,7 @@ read_snoop_on(struct janitor *janitor, char *lp)
 		syntaxerr(1, "Bad BPF filter: %s", pcap_geterr(pcapp));
 	pcap_freecode(&janitor->u.snoop.bpfpg);
 	pcap_close(pcapp);
-	syslog(LOG_NOTICE, "janitor %d, snooping on %s (%s)",
+	syslog(LOG_NOTICE, "(janitor %d) Snooping on %s (%s)",
 	    janitor->id, janitor->u.snoop.iface, janitor->u.snoop.filter);
 }
 #endif
