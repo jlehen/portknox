@@ -255,33 +255,6 @@ schedule(struct task *task)
 }
 
 /*
- * Create a task!
- */
-struct task *
-create_task(int timeout, struct ushashbucket *ushbp, struct janitor *jp,
-    void (*func)(void *), void *arg)
-{
-	struct task *task;
-
-	task = mymalloc(sizeof (*task), "struct task");
-	task->ushashbucket = ushbp;
-	task->janitor = jp;
-	task->tick = 0;
-	task->timeout = timeout;
-	task->func = func;
-	task->arg = arg;
-
-	/*
-	 * Insert in usage hash.
-	 */
-	if (ushbp != NULL)
-		/* Actions are sorted by timeout in struct janitor. */
-		TAILQ_INSERT_TAIL(&ushbp->tasks, task, siblinglist);
-
-	return task;
-}
-
-/*
  * Execute callouts and rotate janitors' usage wheel.
  */
 void
@@ -475,10 +448,27 @@ tend(struct janitor *janitor)
 		cmd = expand(action->cmd, ipstr, janitor);
 		if (action->timeout == 0)
 			runcallout(cmd);
-		else
-			schedule(create_task(action->timeout + 1, ushbucket,
-			    janitor, runcallout, cmd));
+		else {
+			task = mymalloc(sizeof (*task), "struct task");
+			task->ushashbucket = ushbucket;
+			task->janitor = janitor;
+			task->tick = 0;
+			task->timeout = action->timeout + 1;
+			task->func = runcallout;
+			task->arg = cmd;
+
+			/*
+			 * Insert in usage hash.
+			 */
+			if (ushbucket != NULL)
+				/* Actions sorted by timeout janitor. */
+				TAILQ_INSERT_TAIL(&ushbucket->tasks, task,
+				    siblinglist);
+
+			schedule(task);
+		}
 	}
+
 	sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
 	janitor->usecount++;
 }
@@ -534,6 +524,8 @@ main(int ac, char *av[])
 	if (sigaction(SIGQUIT, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 	if (sigaction(SIGTERM, &sa, NULL) == -1)
+		e(2, NULL, "sigaction");
+	if (sigaction(SIGINT, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 
 	jcount = read_conf(configfile, &janitors);
@@ -655,6 +647,18 @@ main(int ac, char *av[])
 
 	alarm(0);
 	nx(NULL, "Exiting");
+	LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
+		myfree(tp->ushashbucket);
+		myfree(tp->arg);
+		myfree(tp);
+	}
+	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++) {
+		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], ticklist, tmptp) {
+			myfree(tp->ushashbucket);
+			myfree(tp->arg);
+			myfree(tp);
+		}
+	}
 	SLIST_FOREACH_SAFE(jp, &janitors, next, tmpjp) {
 		switch (jp->type) {
 		case LISTENING_JANITOR:
@@ -676,18 +680,19 @@ main(int ac, char *av[])
 		SLIST_FOREACH_SAFE(action, &jp->actions, next, tmpaction) {
 			myfree(action->cmd);
 			myfree(action);
-			}
-		myfree(jp);
-	}
-	LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
-		myfree(tp->arg);
-		myfree(tp);
-	}
-	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++) {
-		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], ticklist, tmptp) {
-			myfree(tp->arg);
-			myfree(tp);
 		}
+		/*
+		 * No need to free hash buckets and tasks from hash,
+		 * they've been above.
+		 */
+		myfree(jp->ushash);
+		/*
+		 * TODO: 
+		 * for (i = 0; i < janitor->ushashsz; i++)
+		 *     LIST_FOREACH_SAFE(&janitor->ushash[])
+		 *         free
+		 */
+		myfree(jp);
 	}
 	exit(0);
 }
