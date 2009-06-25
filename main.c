@@ -40,6 +40,8 @@ static struct tasklist timeout_wheel[TIMEOUT_WHEEL_SIZE];
 static struct tasklist tasks_todo;
 static unsigned int curtick;
 static int mustquit = 0;
+static int daemonized = 0;
+static int debug = 0;
 static sigset_t alrm_sigset;
 
 static void
@@ -59,7 +61,7 @@ usage(const char *basename)
 }
 
 static void
-mylog(int status, int prio, const struct janitor *j, const char *err,
+mylog(int status, int prio, const struct janitor *j, const char *errstr,
     const char *fmt, ...)
 {
 	va_list ap;
@@ -70,17 +72,26 @@ mylog(int status, int prio, const struct janitor *j, const char *err,
 	i = vsnprintf(errbuf, sizeof (errbuf), fmt, ap);
 	va_end(ap);
 	if (j != NULL && err != NULL)
-		syslog(prio, "(janitor %d) %s: %s", j->id, errbuf, err);
+		syslog(prio, "(janitor %d) %s: %s", j->id, errbuf, errstr);
 	else if (j != NULL && err == NULL)
 		syslog(prio, "(janitor %d) %s", j->id, errbuf);
 	else if (j == NULL && err != NULL)
-		syslog(prio, "%s: %s", errbuf, err);
+		syslog(prio, "%s: %s", errbuf, errstr);
 	else /* j == NULL && err == NULL */
 		syslog(prio, "%s", errbuf);
 	if (i >= (int)sizeof (errbuf))
 		syslog(prio, "previous message has been truncated");
+
+	if (daemonized || debug) {
+		if (status >= 0)
+			exit(status);
+		return;
+	}
+
 	if (status >= 0)
-		exit(status);
+		err(status, "Error occured, check system log");
+	else
+		warn("Warning occured, check system log");
 }
 
 #define	e(s, j, fmt, ...)	\
@@ -499,6 +510,7 @@ main(int ac, char *av[])
 			configfile = optarg;
 			break;
 		case 'd':
+			debug = 0;
 			setDebug();
 			break;
 		case 'h':
@@ -597,6 +609,11 @@ main(int ac, char *av[])
 	sigemptyset(&sa.sa_mask);
 	if (sigaction(SIGALRM, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
+
+	if (debug) {
+		daemon(0, 0);
+		daemonized = 1;
+	}
 
 	alarm(1);
 
