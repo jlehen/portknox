@@ -114,9 +114,10 @@ mylog(int status, int prio, const struct janitor *j, const char *errstr,
     mylog(-1, LOG_INFO, j, NULL, fmt, ## __VA_ARGS__)
 
 void
-quit(int s __attribute__ ((unused)))
+quit(int s)
 {
 
+	nx(NULL, "Received signal %s", s);
 	mustquit = 1;
 }
 
