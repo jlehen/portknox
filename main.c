@@ -49,13 +49,14 @@ usage(const char *basename)
 {
 
 	fprintf(stderr,
-	    "Usage: %s [-c configfile] [-d] [-h] [-p pidfile] [-s facility]\n"
+	    "Usage: %s [-c configfile] [-dhS] [-p pidfile] [-s facility]\n"
 	    "Options:\n"
 	    "  -c	Set config file (defaults to \"portknox.conf\").\n"
 	    "  -d	Issue all syslog messages on stderr as well.\n"
 	    "  -h	Show this help.\n"
 	    "  -p	Set pid file (defaults to \"portknox.pid\").\n"
 	    "  -s	Set syslog facility.\n"
+	    "  -S	Show configuration file syntax.\n"
 	    "Valid facilities: auth, daemon, securiry, user, local0 "
 	    "... local7.\n",
 	    basename);
@@ -504,7 +505,7 @@ main(int ac, char *av[])
 	configfile = "portknox.conf";
 	pidfile = "portknox.pid";
 	while (1) {
-		opt = getopt(ac, av, ":c:dhp:s:");
+		opt = getopt(ac, av, ":c:dhp:s:S");
 		if (opt == -1)
 			break;
 		switch (opt) {
@@ -524,6 +525,10 @@ main(int ac, char *av[])
 			break;
 		case 's':
 			setLogFacility(optarg);
+			break;
+		case 'S':
+			show_conf_syntax();
+			exit(0);
 			break;
 		case ':':
 			fprintf(stderr, "Unknown option '%c'", optopt);

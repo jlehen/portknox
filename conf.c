@@ -33,12 +33,19 @@ static const char *filename;
 
 #define	JANITOR_SYNTAX	    \
     "Syntax:\n" \
-    "  listen <ip>:<port>/<proto> [modifiers]\n" \
-    "  \\t\tmax rate: <count>/<interval>	    - MANDATORY\n" \
-    "  \\t\ton dup: <'exec'|'ignore'|'reset'>\n" \
-    "  \\t\taction at <interval>: <action>\n" \
-    "  \\t\taction at <interval>: <action>\n" \
-    "  ...\n" \
+    "> Listening janitor:\n" \
+    "% listen <ip>:<port>/<protocol>\n" \
+    "%   \\t\t<attributes>\n" \
+    "\n" \
+    "> Snooping janitor:\n" \
+    "% snoop on <interface> <filter>\n" \
+    "%   \\t\t<attributes>\n" \
+    "\n" \
+    "Attributes:\n" \
+    "%  \\t\tmax rate: <count>/<interval>                             (1)\n" \
+    "%  \\t\ton dup: <'exec'|'ignore'|'reset'>                        (0-1)\n" \
+    "%  \\t\taction at <interval>: <action>                           (1-n)\n" \
+    "\n" \
     "Interval:\n" \
     "  <integer>[smhdw]\n"
 
@@ -71,7 +78,7 @@ syntaxerr(int status, const char *fmt, ...)
 	if (vasprintf(&msg, fmt, ap) == -1)
 		msg = (char *)fmt;
 	fprintf(stderr, "%s(%d): %s\n", filename, linecount, msg);
-	fprintf(stderr, JANITOR_SYNTAX);
+	fprintf(stderr, "%s", JANITOR_SYNTAX);
 	syslog(LOG_ERR, "Error in configuration file %s(%d)",
 	    filename, linecount);
 	exit(status);
@@ -517,4 +524,9 @@ read_conf(const char *file, struct janitorlist *jlist)
 	return jcount;
 }
 
+void
+show_conf_syntax()
+{
 
+	printf("%s", JANITOR_SYNTAX);
+}
