@@ -258,7 +258,6 @@ read_property(struct janitor *janitor, const char *lp)
 			    "%s", word == NULL ? lp : faststring_peek(word));
 
 		timeout = parse_timespan(&lp, "action");
-		fprintf(stderr, "DEBUG: janitor %p, new action, timeout %d, *lp: %s\n", janitor, timeout, lp);
 
 		if (-1 == get_punct(&lp, ':'))
 			syntaxerr(1, "Expecting ':' after \"action at "
@@ -455,8 +454,6 @@ read_conf(const char *file, struct janitorlist *jlist)
 		/*
 		 * New janitor.
 		 */
-		fprintf(stderr, "DEBUG: line to parse: %s\n", lp);
-
 		if (janitor != NULL) {
 			if (janitor->uswheelsz == 0)
 				syntaxerr(1, "Janitor with no max rate");
@@ -482,7 +479,6 @@ read_conf(const char *file, struct janitorlist *jlist)
 		if (word == NULL)
 			syntaxerr(1, "Expecting 'listen': %s", lp);
 		if (!strcmp(faststring_peek(word), "listen")) {
-			fprintf(stderr, "DEBUG: new listening janitor\n");
 			faststring_free(word);
 			word = get_word((const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))
@@ -494,7 +490,6 @@ read_conf(const char *file, struct janitorlist *jlist)
 			read_listen_on(janitor, lp);
 #ifdef SNOOP
 		} else if (!strcmp(faststring_peek(word), "snoop")) {
-			fprintf(stderr, "DEBUG: new snooping janitor\n");
 			faststring_free(word);
 			word = get_word((const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))

@@ -285,7 +285,6 @@ tick()
 	 */
 	slot = curtick % TIMEOUT_WHEEL_SIZE;
 	prevtp = NULL;
-	fprintf(stderr, "DEBUG: alarm, curtick %d, wheel slot %d, first task %p\n", curtick, slot, LIST_FIRST(&timeout_wheel[slot]));
 	i = 0;
 	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
 		if (tp->tick > curtick)
@@ -293,7 +292,6 @@ tick()
 		prevtp = tp;
 		i++;
 	}
-	fprintf(stderr, "DEBUG: alarm, %d task(s) to be executed\n", i);
 	if (prevtp != NULL) {
 		LIST_NEXT(prevtp, ticklist) = NULL;
 		LIST_FIRST(&tasks_todo) = LIST_FIRST(&timeout_wheel[slot]);
@@ -308,8 +306,6 @@ tick()
 
 		jp->uscur -= jp->uswheel[slot];
 		jp->uswheel[slot] = 0;
-		fprintf(stderr, "DEBUG: alarm, janitor %p, usage wheel slot %d emptied, total usage: %d\n",
-		    jp, slot, jp->uscur);
 	}
 
 }
@@ -655,11 +651,8 @@ main(int ac, char *av[])
 			e(2, NULL, "select");
 		}
 		SLIST_FOREACH(jp, &janitors, next) {
-			if (FD_ISSET(jp->sock, &fds)) {
-				fprintf(stderr, "DEBUG: activity on fd %d\n",
-				    jp->sock);
+			if (FD_ISSET(jp->sock, &fds))
 				tend(jp);
-			}
 		}
 	}
 
