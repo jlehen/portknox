@@ -420,7 +420,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 	filename = file;
 	f = fopen(filename, "r");
 	if (f == NULL)
-		err(1, "%s", filename);
+		err(1, "Cannot open '%s'", filename);
 	SLIST_INIT(jlist);
 	janitor = NULL;
 	id = 0;
