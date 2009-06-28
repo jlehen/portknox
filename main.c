@@ -607,7 +607,7 @@ main(int ac, char *av[])
 	if (sigaction(SIGALRM, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 
-	if (debug) {
+	if (debug == 0) {
 		daemon(0, 0);
 		daemonized = 1;
 	}
