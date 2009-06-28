@@ -72,13 +72,13 @@ mylog(int status, int prio, const struct janitor *j, const char *errstr,
 	va_start(ap, fmt);
 	i = vsnprintf(errbuf, sizeof (errbuf), fmt, ap);
 	va_end(ap);
-	if (j != NULL && err != NULL)
+	if (j != NULL && errstr != NULL)
 		syslog(prio, "(janitor %d) %s: %s", j->id, errbuf, errstr);
-	else if (j != NULL && err == NULL)
+	else if (j != NULL && errstr == NULL)
 		syslog(prio, "(janitor %d) %s", j->id, errbuf);
-	else if (j == NULL && err != NULL)
+	else if (j == NULL && errstr != NULL)
 		syslog(prio, "%s: %s", errbuf, errstr);
-	else /* j == NULL && err == NULL */
+	else /* j == NULL && errstr == NULL */
 		syslog(prio, "%s", errbuf);
 	if (i >= (int)sizeof (errbuf))
 		syslog(prio, "previous message has been truncated");
