@@ -89,7 +89,7 @@ mylog(int status, int prio, const struct janitor *j, const char *errstr,
 		return;
 	}
 
-	if (status >= 0) {
+	if (status >= 0)
 		err(status, "Error occured, check system log");
 	if (warns++ == 0)
 		warn("Warning occured, check system log");
