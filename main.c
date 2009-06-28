@@ -49,11 +49,12 @@ usage(const char *basename)
 {
 
 	fprintf(stderr,
-	    "Usage: %s [-c configfile] [-d] [-h] [-s facility]\n"
+	    "Usage: %s [-c configfile] [-d] [-h] [-p pidfile] [-s facility]\n"
 	    "Options:\n"
 	    "  -c	Set config file (defaults to \"portknox.conf\").\n"
 	    "  -d	Issue all syslog messages on stderr as well.\n"
 	    "  -h	Show this help.\n"
+	    "  -p	Set pid file (defaults to \"portknox.pid\").\n"
 	    "  -s	Set syslog facility.\n"
 	    "Valid facilities: auth, daemon, securiry, user, local0 "
 	    "... local7.\n",
@@ -484,7 +485,7 @@ tend(struct janitor *janitor)
 int
 main(int ac, char *av[])
 {
-	const char *configfile;
+	const char *configfile, *pidfile;
 	struct sigaction sa;
 	struct janitor *jp, *tmpjp;
 	struct task *tp, *tmptp;
@@ -492,14 +493,17 @@ main(int ac, char *av[])
 	int opt, jcount, i, s, fdmax, slot;
 	struct addrinfo *ai;
 	fd_set fds_, fds;
+	FILE *pidfh;
+	char pid[16];
 #ifdef SNOOP
 	pcap_t *pcapp;
 	char pcaperr[PCAP_ERRBUF_SIZE];
 #endif
 
 	configfile = "portknox.conf";
+	pidfile = "portknox.pid";
 	while (1) {
-		opt = getopt(ac, av, ":c:dhs:");
+		opt = getopt(ac, av, ":c:dhp:s:");
 		if (opt == -1)
 			break;
 		switch (opt) {
@@ -513,6 +517,9 @@ main(int ac, char *av[])
 		case 'h':
 			usage(basename(av[0]));
 			exit(0);
+			break;
+		case 'p':
+			pidfile = optarg;
 			break;
 		case 's':
 			setLogFacility(optarg);
@@ -607,10 +614,16 @@ main(int ac, char *av[])
 	if (sigaction(SIGALRM, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 
+	pidfh = fopen(pidfile, "w");
+	if (pidfh == NULL)
+		e(2, NULL, "Cannot open '%s'", pidfile);
 	if (debug == 0) {
 		daemon(0, 0);
 		daemonized = 1;
 	}
+	i = snprintf(pid, sizeof (pid), "%li\n", (long int)getpid());
+	fputs(pid, pidfh);
+	fclose(pidfh);
 
 	alarm(1);
 
