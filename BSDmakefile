@@ -7,7 +7,7 @@ CFLAGS+= -I/usr/local/include -DDMALLOC -DDMALLOC_FUNC_CHECK
 LDFLAGS+= -L/usr/local/lib -ldmalloc
 .endif
 
-.ifdef SNOOP
+.ifndef NOSNOOP
 CFLAGS+= -DSNOOP=1
 LDFLAGS+= -lpcap
 .endif
