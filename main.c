@@ -67,6 +67,7 @@ mylog(int status, int prio, const struct janitor *j, const char *errstr,
 	va_list ap;
 	int i;
 	char errbuf[128];	/* Should be enough */
+	static int warns = 0;
 
 	va_start(ap, fmt);
 	i = vsnprintf(errbuf, sizeof (errbuf), fmt, ap);
@@ -88,9 +89,9 @@ mylog(int status, int prio, const struct janitor *j, const char *errstr,
 		return;
 	}
 
-	if (status >= 0)
+	if (status >= 0) {
 		err(status, "Error occured, check system log");
-	else
+	if (warns++ == 0)
 		warn("Warning occured, check system log");
 }
 
