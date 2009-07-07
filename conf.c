@@ -81,10 +81,15 @@ static const char *filename;
 "    proto = ( 'tcp' | 'udp' )\n"					\
 "    interface = (* interface name *)\n"				\
 "    pcap filter = (* self explanatory *)\n"				\
-"    command = (* command to execute *)\n"				\
+"    command = (* command to execute, see note below *)\n"		\
 "    number = (* self explanatory *)\n"					\
 "    wp = (* white space *)\n"						\
-"    eol = (* end of line *)\n"
+"    eol = (* end of line *)\n"						\
+"    \n"								\
+"Note:\n"								\
+"    - Commands are subject to expansion (%h => src host, %n => usecount)\n"\
+"    - 'max rate' parameter is mandatory and must appear only once\n"	\
+"    - 'action' parameter is mandatory and can appear one or more time\n"\
 
 #define	JANITOR_EXAMPLE							\
 "EXAMPLE:\n"								\
