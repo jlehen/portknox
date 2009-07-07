@@ -629,7 +629,7 @@ main(int ac, char *av[])
 	if (pidfh == NULL)
 		e(2, NULL, "Cannot open '%s'", pidfile);
 	if (debug == 0) {
-		daemon(0, 0);
+		daemon(1, 0);
 		daemonized = 1;
 	}
 	i = snprintf(pid, sizeof (pid), "%li\n", (long int)getpid());
