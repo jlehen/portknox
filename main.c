@@ -49,10 +49,11 @@ usage(const char *basename)
 {
 
 	fprintf(stderr,
-	    "Usage: %s [-c configfile] [-dhS] [-p pidfile] [-s facility]\n"
+	    "Usage: %s [-c configfile] [-dEhS] [-p pidfile] [-s facility]\n"
 	    "Options:\n"
 	    "  -c	Set config file (defaults to \"portknox.conf\").\n"
 	    "  -d	Issue all syslog messages on stderr as well.\n"
+	    "  -E	Show configuration file example.\n"
 	    "  -h	Show this help.\n"
 	    "  -p	Set pid file (defaults to \"portknox.pid\").\n"
 	    "  -s	Set syslog facility.\n"
@@ -505,7 +506,7 @@ main(int ac, char *av[])
 	configfile = "portknox.conf";
 	pidfile = "portknox.pid";
 	while (1) {
-		opt = getopt(ac, av, ":c:dhp:s:S");
+		opt = getopt(ac, av, ":c:dEhp:s:S");
 		if (opt == -1)
 			break;
 		switch (opt) {
@@ -515,6 +516,10 @@ main(int ac, char *av[])
 		case 'd':
 			debug = 0;
 			setDebug();
+			break;
+		case 'E':
+			show_conf_example();
+			exit(0);
 			break;
 		case 'h':
 			usage(basename(av[0]));

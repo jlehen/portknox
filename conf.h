@@ -117,5 +117,6 @@ SLIST_HEAD(janitorlist, janitor);
 
 extern int read_conf(const char *, struct janitorlist *);
 extern void show_conf_syntax();
+extern void show_conf_example();
 
 #endif /* !_CONF_H_ */

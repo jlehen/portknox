@@ -31,23 +31,46 @@ static int id;
 static int linecount;
 static const char *filename;
 
-#define	JANITOR_SYNTAX	    \
-    "Syntax:\n" \
-    "> Listening janitor:\n" \
-    "% listen <ip>:<port>/<protocol>\n" \
-    "%   \\t\t<attributes>\n" \
-    "\n" \
-    "> Snooping janitor:\n" \
-    "% snoop on <interface> <filter>\n" \
-    "%   \\t\t<attributes>\n" \
-    "\n" \
-    "Attributes:\n" \
-    "%  \\t\tmax rate: <count>/<interval>                             (1)\n" \
-    "%  \\t\ton dup: <'exec'|'ignore'|'reset'>                        (0-1)\n" \
-    "%  \\t\taction at <interval>: <action>                           (1-n)\n" \
-    "\n" \
-    "Interval:\n" \
-    "  <integer>[smhdw]\n"
+#define	JANITOR_SYNTAX							\
+"EBNF:\n"								\
+"    listening janitor =\n"						\
+"            'listen', wp, 'on', wp,\n"					\
+"            ip address, ':', port, '/', proto, eol,\n"			\
+"            parameters ;\n"						\
+"    snooping janitor =\n"						\
+"            'snoop', wp, 'on', wp, interface, wp, pcap filter, eol\n"	\
+"            parameters ;\n"						\
+"    parameters = { tab ( max rate | on dup | action ) eol } ;\n"	\
+"    max rate =\n"							\
+"    	    'max', wp, 'rate', ':', [ wp ], number, '/', timespan\n"	\
+"    on dup =\n"							\
+"           'on', wp, 'dup', colon, [ wp ],\n"				\
+"           ( 'exec' | 'ignore' | 'reset' )\n"				\
+"    action = 'action', wp, 'at', wp, timespan, ':', command\n"		\
+"    timespan = number, ('s' | 'm' | 'h' | 'd' | 'w')\n"		\
+"    ip address = (* self explanatory *)\n"				\
+"    port = number\n"							\
+"    proto = ( 'tcp' | 'udp' )\n"					\
+"    interface = (* interface name *)\n"				\
+"    pcap filter = (* self explanatory *)\n"				\
+"    command = (* command to execute *)\n"				\
+"    number = (* self explanatory *)\n"					\
+"    wp = (* white space *)\n"						\
+"    eol = (* end of line *)\n"
+
+#define	JANITOR_EXAMPLE							\
+"EXAMPLE:\n"								\
+"    listen on 192.168.0.1:1411/tcp\n"					\
+"           max rate: 5/10s\n"						\
+"           on dup: reset\n"						\
+"	    action at 0s: pfctl -t sshd -T add %h\n"			\
+"           action at 30s: pfctl -t sshd -T delete %h\n"		\
+"    \n"								\
+"    snoop on bge0 dst host 192.168.0.1 and icmp[icmptype] == icmp-echo\n"\
+"            max rate: 10/30m\n"					\
+"            on dup: ignore\n"						\
+"            action at 0s: /www/regen_index.sh\n"			\
+"            action at 5m: true\n"
 
 #define	EAT_BLANKS(p)	    do { while (isblank(*(p))) { (p)++; } } while (0)
 
@@ -529,4 +552,11 @@ show_conf_syntax()
 {
 
 	printf("%s", JANITOR_SYNTAX);
+}
+
+void
+show_conf_example()
+{
+
+	printf("%s", JANITOR_EXAMPLE);
 }
