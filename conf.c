@@ -96,7 +96,7 @@ static const char *filename;
 "    listen on 192.168.0.1:1411/tcp\n"					\
 "           max rate: 5/10s\n"						\
 "           on dup: reset\n"						\
-"	    action at 0s: pfctl -t sshd -T add %h\n"			\
+"           action at 0s: pfctl -t sshd -T add %h\n"			\
 "           action at 30s: pfctl -t sshd -T delete %h\n"		\
 "    \n"								\
 "    snoop on bge0 dst host 192.168.0.1 and icmp[icmptype] == icmp-echo\n"\
