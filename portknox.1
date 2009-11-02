@@ -1,0 +1,65 @@
+.\" Copyright (c) 2009 Jeremie Le Hen <jeremie@le-hen.org>
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.\" $Id: portknox.1,v 1.1 2009/11/02 22:23:10 jlh Exp $
+.\"
+.Dd Jul 7, 2009
+.Dt PORTKNOX 8
+.Os
+.Sh NAME
+.Nm portknox
+.Nd is a port-knocking daemon which can either listen or snoop on a port.
+.Sh SYNOPSIS
+.Nm
+.Op Fl dEhS
+.Op Fl c Ar configfile
+.Op Fl p Ar pidfile
+.Op Fl s Ar facility
+.Sh DESCRIPTION
+.Nm
+is a simple, resource-efficient and yet powerful port-knocking daemon,
+that has been contrived following the Unix philosophy:
+.Dq Write programs that do one thing and do it well .
+That is
+.Nm
+knows how to listen or snoop on a bunch of ports, but contrary to most other
+portknockers which know how to fiddle with firewall rulesets or
+.Xr tcpwrapper 8
+configuration files directly, it simply knows how to run a sequence of
+commands at configurable interval after the
+.Sq knock .
+.Nm
+is therefore operating-system agnostic and can basically do anything
+you want, from adding an IP address in an in-core whitelist to writing a
+dedicated configuration file and starting a daemon for a few minutes
+afterward.
+.Pp
+In order to prevent denial-of-service,
+.Nm
+enforces the user to provide a maximum use rate for each port.
+
+.Sh HISTORY
+
+.Sh AUTHORS
+.An "Jeremie Le Hen" <jeremie@le-hen.org>
