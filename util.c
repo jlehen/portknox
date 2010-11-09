@@ -23,12 +23,13 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: util.c,v 1.4 2009/07/07 21:30:45 jlh Exp $
+ * $Id: util.c,v 1.5 2010/11/09 21:37:08 jlh Exp $
  */
 
 #include <err.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "util.h"
 
 #ifdef DMALLOC
@@ -71,4 +72,15 @@ myfree(void *ptr)
 	fprintf(stderr, "DEBUG: free %p\n", ptr);
 	*/
 	free(ptr);
+}
+
+char *
+mystrdup(const char *str)
+{
+	char * res;
+
+	res = strdup(str);
+	if (res == NULL)
+		err(2, "Cannot duplicate string (%zu bytes)", strlen(str));
+	return res;
 }
