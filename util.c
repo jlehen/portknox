@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: util.c,v 1.6 2010/11/09 21:53:34 jlh Exp $
+ * $Id: util.c,v 1.7 2010/11/09 21:55:18 jlh Exp $
  */
 
 #include <err.h>
@@ -81,7 +81,7 @@ mystrdup(const char *str, const char *desc)
 
 	res = strdup(str);
 	if (res == NULL)
-		err(2, "Cannot duplicate string %s (%zu bytes)", desc,
+		err(2, "Cannot duplicate %s string (%zu bytes)", desc,
 		    strlen(str));
 	return res;
 }
