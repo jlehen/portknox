@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.32 2010/11/10 07:38:23 jlh Exp $
+ * $Id: main.c,v 1.33 2010/11/10 07:45:50 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -37,6 +37,7 @@
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <libgen.h>
 #include <limits.h>
 #include <netdb.h>
@@ -71,6 +72,7 @@ static int mustquit = 0;
 static int daemonized = 0;
 static int debug = 0;
 static sigset_t alrm_sigset;
+static int devnull = 0;
 
 static void
 usage(const char *basename)
@@ -188,6 +190,9 @@ run(char **argv)
 
 	SLIST_FOREACH(jp, &janitors, next)
 		close(jp->sock);
+	dup2(devnull, 0);
+	dup2(devnull, 1);
+	dup2(devnull, 2);
 
 	if (execvp(argv[0], argv) == -1)
 		w(NULL, "Can't exec '%s'", argv[0]);
@@ -655,6 +660,10 @@ main(int ac, char *av[])
 	i = snprintf(pid, sizeof (pid), "%li\n", (long int)getpid());
 	fputs(pid, pidfh);
 	fclose(pidfh);
+
+	devnull = open("/dev/null", O_RDWR, 0);
+	if (devnull == -1)
+		e(2, NULL, "Cannot open '/dev/null'");
 
 	alarm(1);
 
