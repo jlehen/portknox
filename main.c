@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.33 2010/11/10 07:45:50 jlh Exp $
+ * $Id: main.c,v 1.34 2010/11/10 14:20:25 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -578,6 +578,11 @@ main(int ac, char *av[])
 	if (sigaction(SIGTERM, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 	if (sigaction(SIGINT, &sa, NULL) == -1)
+		e(2, NULL, "sigaction");
+
+	sa.sa_handler = SIG_IGN;
+	sa.sa_flags = SA_NOCLDWAIT;
+	if (sigaction(SIGCHLD, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 
 	jcount = read_conf(configfile, &janitors);
