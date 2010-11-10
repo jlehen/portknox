@@ -303,9 +303,10 @@ static void
 read_property(struct janitor *janitor, const char *lp)
 {
 	faststring *word;
-	struct action *action, *ap;
+	struct action *action, *actp;
 	const char *lp0;
-	int timeout, prime;
+	char *cmd, *sp, **argv, **ap;
+	int timeout, prime, arraysz;
 
 	lp0 = lp;
 	word = get_word(&lp);
@@ -329,20 +330,37 @@ read_property(struct janitor *janitor, const char *lp)
 		EAT_BLANKS(lp);
 		action = mymalloc(sizeof (*action), "struct action");
 		action->timeout = timeout;
-		action->cmd = strdup(lp);
 		SLIST_NEXT(action, next) = NULL;
+		/* Split action command-line. */
+		cmd = mystrdup(lp, "command");
+		arraysz = 16;
+		ap = argv = mymalloc(arraysz * sizeof (*argv), "argument list");
+		while (cmd != NULL) {
+			sp = strsep(&cmd, " ");
+			if (*sp == '\0')
+				continue;
+			*ap++ = sp;
+			if (ap == argv + arraysz) {
+				arraysz += 16;
+				argv = myrealloc(argv, arraysz * sizeof (*argv),
+				    "argument list");
+			}
+		}
+		*ap = NULL;
+		action->argv = argv;
+		action->argc = ap - argv + 1;
 
 		/* Sort list by timeout. */
-		ap = SLIST_FIRST(&janitor->actions);
+		actp = SLIST_FIRST(&janitor->actions);
 		if (SLIST_EMPTY(&janitor->actions) ||
-		    action->timeout < ap->timeout)
+		    action->timeout < actp->timeout)
 			SLIST_INSERT_HEAD(&janitor->actions, action, next);
 		else {
-			while (SLIST_NEXT(ap, next) != NULL &&
-			    action->timeout > SLIST_NEXT(ap, next)->timeout)
-				ap = SLIST_NEXT(ap, next);
+			while (SLIST_NEXT(actp, next) != NULL &&
+			    action->timeout > SLIST_NEXT(actp, next)->timeout)
+				actp = SLIST_NEXT(actp, next);
 
-			SLIST_INSERT_AFTER(ap, action, next);
+			SLIST_INSERT_AFTER(actp, action, next);
 		}
 
 	/* max rate */
@@ -414,17 +432,17 @@ read_listen_on(struct janitor *janitor, char *lp)
 	if (p == NULL)
 		syntaxerr(1, "Cannot find ':': %s", lp);
 	*p = '\0';
-	janitor->u.listen.ip = strdup(lp);
+	janitor->u.listen.ip = mystrdup(lp, "IP address");
 	lp = p + 1;
 
 	p = strchr(lp, '/');
 	if (p == NULL)
 		syntaxerr(1, "Cannot find '/': %s", lp);
 	*p = '\0';
-	janitor->u.listen.port = strdup(lp);
+	janitor->u.listen.port = mystrdup(lp, "port");
 	lp = p + 1;
 
-	janitor->u.listen.proto = strdup(lp);
+	janitor->u.listen.proto = mystrdup(lp, "prototype");
 
 	fill_addrinfo(janitor);
 	syslog(LOG_NOTICE, "(janitor %d) Listening on %s:%s/%s",
@@ -450,7 +468,7 @@ read_snoop_on(struct janitor *janitor, char *lp)
 	if (p == NULL)
 		syntaxerr(1, "Expecting BPF filter after interface: %s", lp);
 	*p = '\0';
-	janitor->u.snoop.iface = strdup(lp);
+	janitor->u.snoop.iface = mystrdup(lp, "interface");
 	lp = p + 1;
 
 	EAT_BLANKS(lp);
@@ -458,7 +476,7 @@ read_snoop_on(struct janitor *janitor, char *lp)
 	if (*lp == '\0')
 		syntaxerr(1, "Expecting BPF filter after interface");
 
-	janitor->u.snoop.filter = strdup(lp);
+	janitor->u.snoop.filter = mystrdup(lp, "filter");
 	pcapp = pcap_open_dead(DLT_RAW, 128);
 	if (-1 == pcap_compile(pcapp, &janitor->u.snoop.bpfpg,
 	    janitor->u.snoop.filter, 0, 0))

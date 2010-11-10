@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: conf.h,v 1.13 2009/07/07 21:30:45 jlh Exp $
+ * $Id: conf.h,v 1.14 2010/11/10 07:36:49 jlh Exp $
  */
 
 #ifndef _CONF_H_
@@ -81,7 +81,8 @@ LIST_HEAD(ushashslot, ushashbucket);
 struct action {
 	SLIST_ENTRY(action) next;
 	int timeout;
-	char *cmd;
+	char **argv;
+	int argc;
 };
 
 SLIST_HEAD(actionlist, action);

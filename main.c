@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.30 2009/07/07 21:30:45 jlh Exp $
+ * $Id: main.c,v 1.31 2010/11/10 07:36:49 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -173,11 +173,8 @@ hash(const char *s)
  * Fork and split command into argument vector in child, then exec.
  */
 void
-run(char *cmd)
+run(char **argv)
 {
-	char *sp;
-	char **argv, **ap;
-	int asize;
 	struct janitor *jp;
 	pid_t pid;
 
@@ -188,22 +185,6 @@ run(char *cmd)
 	}
 	if (pid > 0)
 		return;
-
-	sp = cmd;
-	asize = 16;
-	ap = argv = mymalloc(asize * sizeof (*argv), "argument list");
-	while (cmd != NULL) {
-		sp = strsep(&cmd, " ");
-		if (*sp == '\0')
-			continue;
-		*ap++ = sp;
-		if (ap - argv == asize) {
-			asize += 16;
-			argv = myrealloc(argv, asize * sizeof (*argv),
-			    "argument list");
-		}
-	}
-	*ap = NULL;
 
 	SLIST_FOREACH(jp, &janitors, next)
 		close(jp->sock);
@@ -219,8 +200,11 @@ run(char *cmd)
 void
 runcallout(void *p)
 {
+	char **ap;
 
 	run(p);
+	for (ap = p; *ap != NULL; ap++)
+		myfree(*ap);
 	myfree(p);
 }
 
@@ -229,46 +213,53 @@ runcallout(void *p)
  *     %h -> src ip
  *     %n -> tending count
  */
-char *
-expand(const char *cmd, const char *ip, const struct janitor *j)
+char **
+expand(int argc, char **argv, const char *ip, const struct janitor *j)
 {
 	faststring *str;
-	const char *p;
+	char *p;
 	char *countstr;
+	char **res, **rp;
 
-	str = faststring_alloc(512);
-	p = cmd;
-	while (*p != '\0') {
-		if (*p != '%') {
-			faststring_strncat(str, p++, 1);
-			continue;
+	res = mymalloc(argc * sizeof (*argv), "argv array");
+	for (rp = res; *argv != NULL; argv++, rp++) {
+		str = faststring_alloc(32);
+		p = *argv;
+		while (*p != '\0') {
+			if (*p != '%') {
+				faststring_strncat(str, p++, 1);
+				continue;
+			}
+			p++;
+			switch (*p) {
+			case '\0':
+				faststring_strcat(str, "%");
+				*rp = faststring_export(str);
+				continue;
+			case '%':
+				faststring_strcat(str, "%");
+				break;
+			case 'h':
+				faststring_strcat(str, ip);
+				break;
+			case 'n':
+				(void)asprintf(&countstr, "%u", j->usecount);
+				if (countstr == NULL)
+					e(2, j, "Command string expansion");
+				faststring_strcat(str, countstr);
+				myfree(countstr);
+				break;
+			default:
+				faststring_strcat(str, "%");
+				faststring_strncat(str, p, 1);
+				break;
+			}
+			p++;
 		}
-		p++;
-		switch (*p) {
-		case '\0':
-			faststring_strcat(str, "%");
-			return faststring_export(str);
-		case '%':
-			faststring_strcat(str, "%");
-			break;
-		case 'h':
-			faststring_strcat(str, ip);
-			break;
-		case 'n':
-			(void)asprintf(&countstr, "%u", j->usecount);
-			if (countstr == NULL)
-				e(2, j, "Command string expansion");
-			faststring_strcat(str, countstr);
-			myfree(countstr);
-			break;
-		default:
-			faststring_strcat(str, "%");
-			faststring_strncat(str, p, 1);
-			break;
-		}
-		p++;
-	}
-	return faststring_export(str);
+		*rp = faststring_export(str);
+	 }
+	 *rp = NULL;
+	 return res;
 }
 
 /*
@@ -357,7 +348,7 @@ tend(struct janitor *janitor)
 	int i, slot, error;
 	char buf[1], ipstr[NI_MAXHOST];
 	uint32_t ip;
-	char *cmd;
+	char **argv;
 	struct action *action;
 	struct ushashbucket *ushbucket;
 	struct task *task;
@@ -485,9 +476,9 @@ tend(struct janitor *janitor)
 
 	/* Perform and schedule actions.  */
 	SLIST_FOREACH(action, &janitor->actions, next) {
-		cmd = expand(action->cmd, ipstr, janitor);
+		argv = expand(action->argc, action->argv, ipstr, janitor);
 		if (action->timeout == 0)
-			runcallout(cmd);
+			runcallout(argv);
 		else {
 			task = mymalloc(sizeof (*task), "struct task");
 			task->ushashbucket = ushbucket;
@@ -495,7 +486,7 @@ tend(struct janitor *janitor)
 			task->tick = 0;
 			task->timeout = action->timeout + 1;
 			task->func = runcallout;
-			task->arg = cmd;
+			task->arg = argv;
 
 			/*
 			 * Insert in usage hash.
@@ -517,6 +508,7 @@ int
 main(int ac, char *av[])
 {
 	const char *configfile, *pidfile;
+	char **ap;
 	struct sigaction sa;
 	struct janitor *jp, *tmpjp;
 	struct task *tp, *tmptp;
@@ -542,7 +534,7 @@ main(int ac, char *av[])
 			configfile = optarg;
 			break;
 		case 'd':
-			debug = 0;
+			debug = 1;
 			setDebug();
 			break;
 		case 'E':
@@ -741,7 +733,9 @@ main(int ac, char *av[])
 #endif
 		}
 		SLIST_FOREACH_SAFE(action, &jp->actions, next, tmpaction) {
-			myfree(action->cmd);
+			for (ap = action->argv; *ap != NULL; ap++)
+				myfree(*ap);
+			myfree(action->argv);
 			myfree(action);
 		}
 		/*
