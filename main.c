@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.31 2010/11/10 07:36:49 jlh Exp $
+ * $Id: main.c,v 1.32 2010/11/10 07:38:23 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -80,7 +80,7 @@ usage(const char *basename)
 	    "Usage: %s [-c configfile] [-dEhS] [-p pidfile] [-s facility]\n"
 	    "Options:\n"
 	    "  -c	Set config file (defaults to \"portknox.conf\").\n"
-	    "  -d	Issue all syslog messages on stderr as well.\n"
+	    "  -d	Debug mode (don't fork and log on stderr as well).\n"
 	    "  -E	Show configuration file example.\n"
 	    "  -h	Show this help.\n"
 	    "  -p	Set pid file (defaults to \"portknox.pid\").\n"
