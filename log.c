@@ -23,12 +23,16 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: log.c,v 1.2 2009/07/07 21:30:45 jlh Exp $
+ * $Id: log.c,v 1.3 2010/11/10 14:23:58 jlh Exp $
  */
 
 #include <err.h>
 #include <string.h>
 #include <syslog.h>
+
+#ifndef LOG_SECURITY
+# define LOG_SECURITY LOG_DAEMON
+#endif
 
 static struct facility {
 	const char *string;
