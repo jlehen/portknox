@@ -23,10 +23,11 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: faststring.c,v 1.4 2009/07/07 21:30:45 jlh Exp $
+ * $Id: faststring.c,v 1.5 2011/01/11 22:14:54 jlh Exp $
  */
 
 #include <stdlib.h>
+#include <string.h>
 #include "util.h"
 #include "faststring.h"
 
@@ -113,6 +114,15 @@ faststring_strncat(faststring *dst, const char *src, int len)
 		FASTSTRING_ADDC(dst, *src++);
 	}
 	return dst;
+}
+
+faststring *
+faststring_strdup(const char *s)
+{
+	faststring *fs;
+
+	fs = faststring_alloc((int)strlen(s));
+	return faststring_strcpy(fs, s);
 }
 
 char *
