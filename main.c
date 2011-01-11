@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.36 2011/01/11 22:44:34 jlh Exp $
+ * $Id: main.c,v 1.37 2011/01/11 22:45:23 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -149,7 +149,7 @@ static void
 quit(int s)
 {
 
-	nx(NULL, "Received signal %s", s);
+	nx(NULL, "Received signal %d", s);
 	mustquit = 1;
 }
 
