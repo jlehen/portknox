@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.34 2010/11/10 14:20:25 jlh Exp $
+ * $Id: main.c,v 1.35 2011/01/11 22:06:53 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -145,7 +145,7 @@ mylog(int status, int prio, const struct janitor *j, const char *errstr,
 #define	ix(j, fmt, ...)		\
     mylog(-1, LOG_INFO, j, NULL, fmt, ## __VA_ARGS__)
 
-void
+static void
 quit(int s)
 {
 
@@ -153,7 +153,7 @@ quit(int s)
 	mustquit = 1;
 }
 
-uint16_t
+static uint16_t
 hash(const char *s)
 {
 	uint16_t h;
@@ -174,7 +174,7 @@ hash(const char *s)
 /*
  * Fork and split command into argument vector in child, then exec.
  */
-void
+static void
 run(char **argv)
 {
 	struct janitor *jp;
@@ -202,7 +202,7 @@ run(char **argv)
 /*
  * Call run() and free argument.
  */
-void
+static void
 runcallout(void *p)
 {
 	char **ap;
@@ -218,7 +218,7 @@ runcallout(void *p)
  *     %h -> src ip
  *     %n -> tending count
  */
-char **
+static char **
 expand(int argc, char **argv, const char *ip, const struct janitor *j)
 {
 	faststring *str;
@@ -270,7 +270,7 @@ expand(int argc, char **argv, const char *ip, const struct janitor *j)
 /*
  * Schedule a task!
  */
-void
+static void
 schedule(struct task *task)
 {
 	struct task *tp;
@@ -297,7 +297,7 @@ schedule(struct task *task)
 /*
  * Execute callouts and rotate janitors' usage wheel.
  */
-void
+static void
 tick()
 {
 	struct task *prevtp, *tp;
@@ -345,7 +345,7 @@ tick()
  *     - Update usage wheel;
  *     - Perform immediate actions and schedule delayed actions.
  */
-void
+static void
 tend(struct janitor *janitor)
 {
 	struct sockaddr_in sin;
