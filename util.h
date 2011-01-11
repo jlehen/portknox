@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: util.h,v 1.4 2010/11/09 21:53:34 jlh Exp $
+ * $Id: util.h,v 1.5 2011/01/11 22:24:24 jlh Exp $
  */
 
 #ifndef _UTIL_H_
@@ -33,5 +33,6 @@ extern void *mymalloc(size_t size, const char *desc);
 extern void *myrealloc(void *ptr, size_t size, const char *desc);
 extern void myfree(void *ptr);
 extern char *mystrdup(const char *st, const char *desc);
+extern int choose_prime(int n);
 
 #endif /* !_UTIL_H_ */

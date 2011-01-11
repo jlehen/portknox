@@ -107,23 +107,6 @@ static const char *filename;
 
 #define	EAT_BLANKS(p)	    do { while (isblank(*(p))) { (p)++; } } while (0)
 
-/* Some random prime numbers. */
-static int primes[] = { 7, 17, 31, 43, 59, 113, 163, 191, 223, 257, 293, 0 };
-
-static int
-choose_prime(int n)
-{
-	int *p;
-
-	for (p = primes; *p != 0; p++)
-		if (*p > n)
-			break;
-	if (p != primes)
-		p--;
-	return *p;
-}
-
-
 static void
 syntaxerr(int status, const char *fmt, ...)
 {

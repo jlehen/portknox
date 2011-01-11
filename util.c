@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: util.c,v 1.7 2010/11/09 21:55:18 jlh Exp $
+ * $Id: util.c,v 1.8 2011/01/11 22:24:24 jlh Exp $
  */
 
 #include <err.h>
@@ -84,4 +84,20 @@ mystrdup(const char *str, const char *desc)
 		err(2, "Cannot duplicate %s string (%zu bytes)", desc,
 		    strlen(str));
 	return res;
+}
+
+/* Some random prime numbers. */
+static int primes[] = { 7, 17, 31, 43, 59, 113, 163, 191, 223, 257, 293, 0 };
+
+int
+choose_prime(int n)
+{
+	int *p;
+
+	for (p = primes; *p != 0; p++)
+		if (*p > n)
+			break;
+	if (p != primes)
+		p--;
+	return *p;
 }
