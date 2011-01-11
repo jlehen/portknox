@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.35 2011/01/11 22:06:53 jlh Exp $
+ * $Id: main.c,v 1.36 2011/01/11 22:44:34 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -151,24 +151,6 @@ quit(int s)
 
 	nx(NULL, "Received signal %s", s);
 	mustquit = 1;
-}
-
-static uint16_t
-hash(const char *s)
-{
-	uint16_t h;
-	uint16_t a, b;
-
-	h = 0xB73F;
-	a = 0x82;
-	b = 0x53 << 8;
-	while (*s) {
-		h = (h << 5) + *s++;
-		a = h >> 7;
-		b = h << 11;
-		h = (h ^ b) >> 2 ^ a;
-	}
-	return h;
 }
 
 /*

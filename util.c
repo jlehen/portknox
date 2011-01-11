@@ -23,11 +23,12 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: util.c,v 1.8 2011/01/11 22:24:24 jlh Exp $
+ * $Id: util.c,v 1.9 2011/01/11 22:44:34 jlh Exp $
  */
 
 #include <err.h>
 #include <stdio.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util.h"
@@ -100,4 +101,22 @@ choose_prime(int n)
 	if (p != primes)
 		p--;
 	return *p;
+}
+
+uint16_t
+hash(const char *s)
+{
+	uint16_t h;
+	uint16_t a, b;
+
+	h = 0xB73F;
+	a = 0x82;
+	b = 0x53 << 8;
+	while (*s) {
+		h = (h << 5) + *s++;
+		a = h >> 7;
+		b = h << 11;
+		h = (h ^ b) >> 2 ^ a;
+	}
+	return h;
 }
