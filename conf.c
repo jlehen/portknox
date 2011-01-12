@@ -305,7 +305,6 @@ read_property(struct janitor *janitor, const char *lp)
 
 	/* action at */
 	if (!strcmp(faststring_peek(word), "action")) {
-		faststring_free(word);
 		get_word(&word, &lp);
 		if (word == NULL || strcmp(faststring_peek(word), "at"))
 			syntaxerr(1, "Expecting \"at\" after word \"action\": "
@@ -355,7 +354,6 @@ read_property(struct janitor *janitor, const char *lp)
 
 	/* max rate */
 	} else if (!strcmp(faststring_peek(word), "max")) {
-		faststring_free(word);
 		get_word(&word, &lp);
 		if (word == NULL || strcmp(faststring_peek(word), "rate"))
 			syntaxerr(1, "Expecting \"rate\" after word \"max\": "
@@ -369,7 +367,6 @@ read_property(struct janitor *janitor, const char *lp)
 
 	/* on dup */
 	} else if (!strcmp(faststring_peek(word), "on")) {
-		faststring_free(word);
 		get_word(&word, &lp);
 		if (word == NULL || strcmp(faststring_peek(word), "dup"))
 			syntaxerr(1, "Expecting \"dup\" after word \"on\": %s",
@@ -378,7 +375,6 @@ read_property(struct janitor *janitor, const char *lp)
 		if (-1 == get_punct(&lp, ':'))
 			syntaxerr(1, "Expected ':' after \"on dup\": %s", lp);
 
-		faststring_free(word);
 		get_word(&word, &lp);
 		if (word == NULL)
 			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
@@ -551,7 +547,6 @@ read_conf(const char *file, struct janitorlist *jlist)
 		if (word == NULL)
 			syntaxerr(1, "Expecting 'listen': %s", lp);
 		if (!strcmp(faststring_peek(word), "listen")) {
-			faststring_free(word);
 			get_word(&word, (const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))
 				syntaxerr(1, "Expecting \"on\" after word "
@@ -562,7 +557,6 @@ read_conf(const char *file, struct janitorlist *jlist)
 			read_listen_on(janitor, lp);
 #ifdef SNOOP
 		} else if (!strcmp(faststring_peek(word), "snoop")) {
-			faststring_free(word);
 			get_word(&word, (const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))
 				syntaxerr(1, "Expecting \"on\" after word "
