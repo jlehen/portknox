@@ -152,36 +152,40 @@ fill_addrinfo(struct janitor *janitor)
 	janitor->u.listen.addrinfo = ai;
 }
 
-static faststring *
-get_word(const char **p)
+static void
+get_word(faststring **fs, const char **p)
 {
-	faststring *fs;
 	int len;
 
 	EAT_BLANKS(*p);
 	len = (int)strspn(*p, "abcdefghijklmnopqrstuvwxyz");
+	if (*fs != NULL) {
+		faststring_free(*fs);
+		*fs = NULL;
+	}
 	if (len == 0)
-		return NULL;
-	fs = faststring_alloc(len + 1);
-	faststring_strncpy(fs, *p, len);
+		return;
+	*fs = faststring_alloc(len + 1);
+	faststring_strncpy(*fs, *p, len);
 	*p += len;
-	return fs;
 }
 
-static faststring *
-get_number(const char **p)
+static void
+get_number(faststring **fs, const char **p)
 {
-	faststring *fs;
 	int len;
 
 	EAT_BLANKS(*p);
 	len = (int) strspn(*p, "0123456789");
+	if (*fs != NULL) {
+		faststring_free(*fs);
+		*fs = NULL;
+	}
 	if (len == 0)
-		return NULL;
-	fs = faststring_alloc(len + 1);
-	faststring_strncpy(fs, *p, len);
+		return;
+	*fs = faststring_alloc(len + 1);
+	faststring_strncpy(*fs, *p, len);
 	*p += len;
-	return fs;
 }
 
 static int
@@ -207,10 +211,11 @@ parse_timespan(const char **lpp, const char *what)
 	long n;
 	char u;
 
-	num = get_number(lpp);
+	num = unit = NULL;
+	get_number(&num, lpp);
 	if (num == NULL)
 		syntaxerr(1, "Expecting number for %s: %s", what, *lpp);
-	unit = get_word(lpp);
+	get_word(&unit, lpp);
 	if (unit == NULL || faststring_strlen(unit) > 1)
 		syntaxerr(1, "Expecting interval unit for %s: %s", what,
 		    unit == NULL ? *lpp : faststring_peek(unit));
@@ -255,7 +260,8 @@ parse_rate(struct janitor *janitor, const char **lpp)
 		syntaxerr(1, "Max rate property cannot be specified more than "
 		    "once: %s", lpp);
 
-	max = get_number(lpp);
+	max = NULL;
+	get_number(&max, lpp);
 	if (max == NULL)
 		syntaxerr(1, "Expecting interger <max> for rate: %s", *lpp);
 	m = strtol(faststring_peek(max), NULL, 10);
@@ -292,14 +298,15 @@ read_property(struct janitor *janitor, const char *lp)
 	int timeout, prime, arraysz;
 
 	lp0 = lp;
-	word = get_word(&lp);
+	word = NULL;
+	get_word(&word, &lp);
 	if (word == NULL)
 		syntaxerr(1, "Expecting property name: %s", lp);
 
 	/* action at */
 	if (!strcmp(faststring_peek(word), "action")) {
 		faststring_free(word);
-		word = get_word(&lp);
+		get_word(&word, &lp);
 		if (word == NULL || strcmp(faststring_peek(word), "at"))
 			syntaxerr(1, "Expecting \"at\" after word \"action\": "
 			    "%s", word == NULL ? lp : faststring_peek(word));
@@ -349,7 +356,7 @@ read_property(struct janitor *janitor, const char *lp)
 	/* max rate */
 	} else if (!strcmp(faststring_peek(word), "max")) {
 		faststring_free(word);
-		word = get_word(&lp);
+		get_word(&word, &lp);
 		if (word == NULL || strcmp(faststring_peek(word), "rate"))
 			syntaxerr(1, "Expecting \"rate\" after word \"max\": "
 			    "%s", word == NULL ? lp : faststring_peek(word));
@@ -363,7 +370,7 @@ read_property(struct janitor *janitor, const char *lp)
 	/* on dup */
 	} else if (!strcmp(faststring_peek(word), "on")) {
 		faststring_free(word);
-		word = get_word(&lp);
+		get_word(&word, &lp);
 		if (word == NULL || strcmp(faststring_peek(word), "dup"))
 			syntaxerr(1, "Expecting \"dup\" after word \"on\": %s",
 			    word == NULL ? lp : faststring_peek(word));
@@ -372,7 +379,7 @@ read_property(struct janitor *janitor, const char *lp)
 			syntaxerr(1, "Expected ':' after \"on dup\": %s", lp);
 
 		faststring_free(word);
-		word = get_word(&lp);
+		get_word(&word, &lp);
 		if (word == NULL)
 			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
 			    "\"reset\" after \"on dup:\": %s", lp);
@@ -490,6 +497,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 	id = 0;
 	linecount = 0;
 	jcount = 0;
+	word = NULL;
 	while (1) {
 		linecount++;
 		if (fgets(line, sizeof (line), f) == NULL) {
@@ -539,12 +547,12 @@ read_conf(const char *file, struct janitorlist *jlist)
 		janitor->uscur = 0;
 		jcount++;
 
-		word = get_word((const char **)&lp);
+		get_word(&word, (const char **)&lp);
 		if (word == NULL)
 			syntaxerr(1, "Expecting 'listen': %s", lp);
 		if (!strcmp(faststring_peek(word), "listen")) {
 			faststring_free(word);
-			word = get_word((const char **)&lp);
+			get_word(&word, (const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))
 				syntaxerr(1, "Expecting \"on\" after word "
 				    "\"listen\": %s",
@@ -555,7 +563,7 @@ read_conf(const char *file, struct janitorlist *jlist)
 #ifdef SNOOP
 		} else if (!strcmp(faststring_peek(word), "snoop")) {
 			faststring_free(word);
-			word = get_word((const char **)&lp);
+			get_word(&word, (const char **)&lp);
 			if (word == NULL || strcmp(faststring_peek(word), "on"))
 				syntaxerr(1, "Expecting \"on\" after word "
 				    "\"snoop\": %s",
