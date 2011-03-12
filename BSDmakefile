@@ -23,10 +23,10 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-# $Id: BSDmakefile,v 1.4 2009/07/07 21:32:02 jlh Exp $
+# $Id: BSDmakefile,v 1.5 2011/03/12 18:12:16 jlh Exp $
 
-CFLAGS+= -Wall -W -g3
-SRCS= main.c conf.c faststring.c util.c log.c
+CFLAGS+= -Wall -W -g3 -g
+SRCS= main.c conf.c hash.c faststring.c util.c log.c
 OBJS= ${SRCS:.c=.o}
 
 .ifdef DMALLOC
@@ -39,15 +39,20 @@ CFLAGS+= -DSNOOP=1
 LDFLAGS+= -lpcap
 .endif
 
-all: portknox
+all: portknox test_hash
+
+test_hash: test_hash.o hash.o util.o
+	${CC} ${LDFLAGS} -o $@ $>
 
 portknox: ${OBJS}
 	${CC} ${LDFLAGS} -o $@ ${OBJS}
 
 main.o: main.c
 conf.o: conf.c
+iphash.o: iphash.c
 faststring.o: faststring.c
 util.o: util.c
 
 clean:
 	rm -f portknox ${OBJS}
+	rm -f test_hash test_hash.o
