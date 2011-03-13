@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: faststring.c,v 1.5 2011/01/11 22:14:54 jlh Exp $
+ * $Id: faststring.c,v 1.6 2011/03/13 10:38:38 jlh Exp $
  */
 
 #include <stdlib.h>
@@ -130,6 +130,18 @@ faststring_peek(const faststring *fs)
 {
 
 	return fs->begin;
+}
+
+int
+faststring_update(faststring *fs)
+{
+
+	char *s;
+
+	for (s = fs->begin; *s != NULL; s++)
+		;
+	fs->end = s;
+	return fs->end - fs->begin;
 }
 
 char *

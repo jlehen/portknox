@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: faststring.h,v 1.7 2011/01/11 22:14:54 jlh Exp $
+ * $Id: faststring.h,v 1.8 2011/03/13 10:38:38 jlh Exp $
  */
 
 #ifndef _FASTSTRING_H_
@@ -45,6 +45,8 @@ extern faststring *faststring_strcat(faststring *, const char *);
 extern faststring *faststring_strncat(faststring *, const char *, int);
 extern faststring *faststring_strdup(const char *);
 extern char *faststring_peek(const faststring *);
+/* Update structure if the inner string has been modified. */
+int faststring_update(faststring *);
 /* Frees the faststring wrapper struct. */
 extern char *faststring_export(faststring *);
 int faststring_strlen(const faststring *);
