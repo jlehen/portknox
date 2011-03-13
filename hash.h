@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: hash.h,v 1.1 2011/03/12 18:12:16 jlh Exp $
+ * $Id: hash.h,v 1.2 2011/03/13 09:00:31 jlh Exp $
  */
 
 #ifndef _HASH_H_
@@ -41,7 +41,7 @@ struct hashbucket *hash_get(struct hash *h, char *k, int ksz);
 void *hash_get_val(struct hash *h, char *k, int ksz, struct hashbucket **hb);
 int hash_remove(struct hash *h, char *k, int ksz, void (*fr)(void *));
 void hashbucket_remove(struct hash *h, struct hashbucket *hb, void (*fr)(void *));
-void *hashbucket_val(struct hashbucket *hb);
+void *hashbucket_get_val(struct hashbucket *hb);
 
 /* "sk" stands for scalar key */
 #define hash_add_sk(h, k, p)	hash_add(h, (char *)&k, sizeof (k), p)

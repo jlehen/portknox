@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: hash.c,v 1.1 2011/03/12 18:12:16 jlh Exp $
+ * $Id: hash.c,v 1.2 2011/03/13 09:00:30 jlh Exp $
  */
 
 #include <sys/stddef.h>
@@ -188,7 +188,7 @@ hashbucket_remove(struct hash *h __attribute__ ((unused)), struct hashbucket *hb
 }
 
 void *
-hashbucket_val(struct hashbucket *hb)
+hashbucket_get_val(struct hashbucket *hb)
 {
 
 	return hb->val;
