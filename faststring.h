@@ -23,27 +23,31 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: faststring.h,v 1.8 2011/03/13 10:38:38 jlh Exp $
+ * $Id: faststring.h,v 1.9 2011/03/16 21:05:11 jlh Exp $
  */
 
 #ifndef _FASTSTRING_H_
 #define _FASTSTRING_H_
 
+#define	FASTSTRING_UNALLOCED	((void *)0x00141180)
+#define FASTSTRING_INITIALIZER	{ FASTSTRING_UNALLOCED }
+#define FASTSTRING_VALID(fs)	((fs)->p != FASTSTRING_UNALLOCED)
+#define	FASTSTRING_INIT(fs)	(fs)->p = FASTSTRING_UNALLOCED;
+
+struct _faststring;
+
 typedef struct {
-	char *begin;
-	char *end;
-	int initlen;
-	int maxlen;
+	struct _faststring *p;
 } faststring;
 
 /* Alloc size includes the final '\0'. */
-extern faststring *faststring_alloc(int);
+extern faststring *faststring_alloc(faststring *, int);
 extern void faststring_free(faststring *);
 extern faststring *faststring_strcpy(faststring *, const char *);
 extern faststring *faststring_strncpy(faststring *, const char *, int);
 extern faststring *faststring_strcat(faststring *, const char *);
 extern faststring *faststring_strncat(faststring *, const char *, int);
-extern faststring *faststring_strdup(const char *);
+extern faststring *faststring_strdup(faststring *, const char *);
 extern char *faststring_peek(const faststring *);
 /* Update structure if the inner string has been modified. */
 int faststring_update(faststring *);

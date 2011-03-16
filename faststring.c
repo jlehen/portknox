@@ -23,9 +23,10 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: faststring.c,v 1.7 2011/03/13 10:42:53 jlh Exp $
+ * $Id: faststring.c,v 1.8 2011/03/16 21:05:10 jlh Exp $
  */
 
+#include <assert.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util.h"
@@ -36,12 +37,19 @@
 #include <dmalloc.h>
 #endif
 
+struct _faststring {
+	char *begin;
+	char *end;
+	int initlen;
+	int maxlen;
+};
+
 #define FASTSTRING_ADDC(fsp, c) \
 	do { \
-		*fsp->end++ = c; \
-		if (fsp->end == fsp->begin + fsp->maxlen) \
+		*fsp->p->end++ = c; \
+		if (fsp->p->end == fsp->p->begin + fsp->p->maxlen) \
 			faststring_extend(fsp); \
-		*fsp->end = '\0'; \
+		*fsp->p->end = '\0'; \
 	} while (0)
 
 static faststring *
@@ -49,26 +57,26 @@ faststring_extend(faststring *fs)
 {
 	int end;
 
-	end = fs->end - fs->begin;
-	fs->begin = myrealloc(fs->begin, fs->maxlen + fs->initlen,
+	end = fs->p->end - fs->p->begin;
+	fs->p->begin = myrealloc(fs->p->begin, fs->p->maxlen + fs->p->initlen,
 	    "buffer in faststring");
-	fs->end = fs->begin + end;
-	fs->maxlen += fs->initlen;
+	fs->p->end = fs->p->begin + end;
+	fs->p->maxlen += fs->p->initlen;
 	return fs;
 }
 
 faststring *
-faststring_alloc(int size)
+faststring_alloc(faststring *fs, int size)
 {
-	faststring *new;
 
-	new = mymalloc(sizeof (faststring), "faststring");
-	new->begin = mymalloc((size_t)size, "buffer in faststring");
-	new->end = new->begin;
-	new->initlen = size;
-	new->maxlen = size;
-	*new->begin = '\0';
-	return new;
+	assert(fs->p == FASTSTRING_UNALLOCED);
+	fs->p = mymalloc(sizeof (struct _faststring), "faststring");
+	fs->p->begin = mymalloc((size_t)size, "buffer in faststring");
+	fs->p->end = fs->p->begin;
+	fs->p->initlen = size;
+	fs->p->maxlen = size;
+	*fs->p->begin = '\0';
+	return fs;
 }
 
 void
@@ -76,6 +84,7 @@ faststring_free(faststring *fs)
 {
 	char *s;
 
+	assert(fs->p != FASTSTRING_UNALLOCED);
 	s = faststring_export(fs);
 	myfree(s);
 }
@@ -84,8 +93,9 @@ faststring *
 faststring_strcpy(faststring *dst, const char *src)
 {
 	
-	dst->end = dst->begin;
-	*dst->begin = '\0';
+	assert(dst->p != FASTSTRING_UNALLOCED);
+	dst->p->end = dst->p->begin;
+	*dst->p->begin = '\0';
 	return faststring_strcat(dst, src);
 }
 
@@ -93,14 +103,17 @@ faststring *
 faststring_strncpy(faststring *dst, const char *src, int len)
 {
 	
-	dst->end = dst->begin;
-	*dst->begin = '\0';
+	assert(dst->p != FASTSTRING_UNALLOCED);
+	dst->p->end = dst->p->begin;
+	*dst->p->begin = '\0';
 	return faststring_strncat(dst, src, len);
 }
 
 faststring *
 faststring_strcat(faststring *dst, const char *src)
 {
+
+	assert(dst->p != FASTSTRING_UNALLOCED);
 	while (*src != '\0')
 		FASTSTRING_ADDC(dst, *src++);
 	return dst;
@@ -110,6 +123,7 @@ faststring *
 faststring_strncat(faststring *dst, const char *src, int len)
 {
 
+	assert(dst->p != FASTSTRING_UNALLOCED);
 	while (*src != '\0' && len-- > 0) {
 		FASTSTRING_ADDC(dst, *src++);
 	}
@@ -117,11 +131,11 @@ faststring_strncat(faststring *dst, const char *src, int len)
 }
 
 faststring *
-faststring_strdup(const char *s)
+faststring_strdup(faststring *fs, const char *s)
 {
-	faststring *fs;
 
-	fs = faststring_alloc((int)strlen(s));
+	assert(fs->p == FASTSTRING_UNALLOCED);
+	faststring_alloc(fs, (int)strlen(s));
 	return faststring_strcpy(fs, s);
 }
 
@@ -129,7 +143,8 @@ char *
 faststring_peek(const faststring *fs)
 {
 
-	return fs->begin;
+	assert(fs->p != FASTSTRING_UNALLOCED);
+	return fs->p->begin;
 }
 
 int
@@ -138,10 +153,11 @@ faststring_update(faststring *fs)
 
 	char *s;
 
-	for (s = fs->begin; *s != '\0'; s++)
+	assert(fs->p != FASTSTRING_UNALLOCED);
+	for (s = fs->p->begin; *s != '\0'; s++)
 		;
-	fs->end = s;
-	return fs->end - fs->begin;
+	fs->p->end = s;
+	return fs->p->end - fs->p->begin;
 }
 
 char *
@@ -149,10 +165,14 @@ faststring_export(faststring *fs)
 {
 	char *s;
 
-	s = fs->begin;
-	fs->begin = fs->end = (void *)0x14111980;
-	fs->maxlen = fs->initlen = 14119180;
-	myfree(fs);
+	assert(fs->p != FASTSTRING_UNALLOCED);
+	s = fs->p->begin;
+	/*
+	fs->p->begin = fs->p->end = FASTSTRING_UNALLOCED;
+	fs->p->maxlen = fs->p->initlen = (int)FASTSTRING_UNALLOCED;
+	*/
+	myfree(fs->p);
+	fs->p = FASTSTRING_UNALLOCED;
 	return s;
 }
 
@@ -160,5 +180,6 @@ int
 faststring_strlen(const faststring *fs)
 {
 
-	return fs->end - fs->begin;
+	assert(fs->p != FASTSTRING_UNALLOCED);
+	return fs->p->end - fs->p->begin;
 }
