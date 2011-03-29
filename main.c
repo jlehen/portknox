@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.37 2011/01/11 22:45:23 jlh Exp $
+ * $Id: main.c,v 1.38 2011/03/29 21:20:15 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -34,6 +34,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <assert.h>
 #include <ctype.h>
 #include <err.h>
 #include <errno.h>
@@ -43,7 +44,6 @@
 #include <netdb.h>
 #include <signal.h>
 #include <stdio.h>
-#include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
@@ -51,6 +51,7 @@
 #include "conf.h"
 #include "faststring.h"
 #include "freebsdqueue.h"
+#include "hash.h"
 #include "log.h"
 #include "util.h"
 
@@ -62,17 +63,31 @@
 #include <pcap.h>
 #endif
 
+struct action_callout_args {
+	char **argv;
+	struct janitor *janitor;
+};
+
+struct state_callout_args {
+	uint32_t ip;
+	int state:31;
+	int set:1;
+	struct janitor *janitor;
+};
+
+typedef uint32_t    state_t;
 #define	TIMEOUT_WHEEL_SIZE	59
 
 static struct janitorlist janitors;
 static struct tasklist timeout_wheel[TIMEOUT_WHEEL_SIZE];
-static struct tasklist tasks_todo;
+static struct tasklist tasks_todo;	/* Tasks to execute on current tick */ 
 static unsigned int curtick;
 static int mustquit = 0;
-static int daemonized = 0;
 static int debug = 0;
 static sigset_t alrm_sigset;
 static int devnull = 0;
+static struct confinfo confinfo;
+static struct hash *states = NULL;	/* Per-IP state array */
 
 static void
 usage(const char *basename)
@@ -94,58 +109,6 @@ usage(const char *basename)
 }
 
 static void
-mylog(int status, int prio, const struct janitor *j, const char *errstr,
-    const char *fmt, ...)
-{
-	va_list ap;
-	int i;
-	char errbuf[128];	/* Should be enough */
-	static int warns = 0;
-
-	va_start(ap, fmt);
-	i = vsnprintf(errbuf, sizeof (errbuf), fmt, ap);
-	va_end(ap);
-	if (j != NULL && errstr != NULL)
-		syslog(prio, "(janitor %d) %s: %s", j->id, errbuf, errstr);
-	else if (j != NULL && errstr == NULL)
-		syslog(prio, "(janitor %d) %s", j->id, errbuf);
-	else if (j == NULL && errstr != NULL)
-		syslog(prio, "%s: %s", errbuf, errstr);
-	else /* j == NULL && errstr == NULL */
-		syslog(prio, "%s", errbuf);
-	if (i >= (int)sizeof (errbuf))
-		syslog(prio, "previous message has been truncated");
-
-	if (daemonized || debug) {
-		if (status >= 0)
-			exit(status);
-		return;
-	}
-
-	if (status >= 0)
-		err(status, "Error occured, check system log");
-	if (warns++ == 0)
-		warn("Warning occured, check system log");
-}
-
-#define	e(s, j, fmt, ...)	\
-    mylog(s, LOG_ERR, j, strerror(errno), fmt, ## __VA_ARGS__)
-#define	ex(s, j, fmt, ...)	\
-    mylog(s, LOG_ERR, j, NULL, fmt, ## __VA_ARGS__)
-#define	w(j, fmt, ...)		\
-    mylog(-1, LOG_WARNING, j, strerror(errno), fmt, ## __VA_ARGS__)
-#define	wx(j, fmt, ...)		\
-    mylog(-1, LOG_WARNING, j, NULL, fmt, ## __VA_ARGS__)
-#define n(j, fmt, ...)		\
-    mylog(-1, LOG_NOTICE, j, strerror(errno), fmt, ## __VA_ARGS__)
-#define	nx(j, fmt, ...)		\
-    mylog(-1, LOG_NOTICE, j, NULL, fmt, ## __VA_ARGS__)
-#define	i(j, fmt, ...)		\
-    mylog(-1, LOG_INFO, j, strerror(errno), fmt, ## __VA_ARGS__)
-#define	ix(j, fmt, ...)		\
-    mylog(-1, LOG_INFO, j, NULL, fmt, ## __VA_ARGS__)
-
-static void
 quit(int s)
 {
 
@@ -157,11 +120,23 @@ quit(int s)
  * Fork and split command into argument vector in child, then exec.
  */
 static void
-run(char **argv)
+run(char **argv, struct janitor *janitor)
 {
-	struct janitor *jp;
+	struct janitor *j;
 	pid_t pid;
+	char **p;
+	faststring fs;
 
+	if (janitor->verbose & VERBOSE_ACTION) {
+		FASTSTRING_INIT(&fs);
+		faststring_alloc(&fs, 128);
+		for (p = argv; *p != NULL; p++) {
+			faststring_strcat(&fs, *p);
+			faststring_strcat(&fs, " ");
+		}
+		verb(janitor, "[action] %s", faststring_peek(&fs));
+		faststring_free(&fs);
+	}
 	pid = fork();
 	if (pid == -1) {
 		warn("Can't fork");
@@ -170,8 +145,8 @@ run(char **argv)
 	if (pid > 0)
 		return;
 
-	SLIST_FOREACH(jp, &janitors, next)
-		close(jp->sock);
+	SLIST_FOREACH(j, &janitors, next)
+		close(j->sock);
 	dup2(devnull, 0);
 	dup2(devnull, 1);
 	dup2(devnull, 2);
@@ -185,14 +160,84 @@ run(char **argv)
  * Call run() and free argument.
  */
 static void
-runcallout(void *p)
+action_callout(void *p)
 {
+	struct action_callout_args *args;
 	char **ap;
 
-	run(p);
-	for (ap = p; *ap != NULL; ap++)
+	args = p;
+	run(args->argv, args->janitor);
+	for (ap = args->argv; *ap != NULL; ap++)
 		myfree(*ap);
-	myfree(p);
+	myfree(args);
+}
+
+static inline int
+check_state(uint32_t ip, int state)
+{
+	state_t *states4ip;
+
+	assert(states != NULL);
+	states4ip = hash_get_val_sk(states, ip, NULL);
+	if (states4ip == NULL)
+		return 0;
+	return states4ip[state];
+}
+
+#define	IP_VAARGS(ip)	    \
+    (ip) & 0xff, ((ip) >> 8) & 0xff, ((ip) >> 16) & 0xff, (ip) >> 24
+static inline void
+set_state(uint32_t ip, int state, int set, struct janitor *janitor)
+{
+	register int i;
+	state_t s, *states4ip;
+
+	assert(confinfo.nstates > 0);
+	assert(states != NULL);
+	if (janitor->verbose & VERBOSE_STATE)
+		verb(janitor, "[state] %s state %d for %d.%d.%d.%d",
+		    set ? "set" : "unset", state, IP_VAARGS(ip));
+	states4ip = hash_get_val_sk(states, ip, NULL);
+	/* If we unset a state, an entry must exist. */
+	assert(set != 0 || states4ip != NULL);
+	if (states4ip == NULL) {
+		if (janitor->verbose & DEBUG_STATE)
+			verb(janitor, "[debugstate] allocating states for "
+			    "%d.%d.%d.%d", IP_VAARGS(ip));
+		states4ip = mymalloc(sizeof (state_t) * confinfo.nstates,
+		    "state_t array");
+		for (i = 0; i < confinfo.nstates; i++)
+			states4ip[i] = 0;
+		(void)hash_add_sk(states, ip, states4ip);
+	}
+	if (set)
+		states4ip[state]++;
+	else {
+		assert(states4ip[state] > 0);
+		states4ip[state]--;
+	}
+
+	if (set)
+		return;
+	s = 0;
+	for (i = 0; i < confinfo.nstates; i++)
+		s |= states4ip[i];
+	if (s == 0) {
+		if (janitor->verbose & DEBUG_STATE)
+			verb(janitor, "[debugstate] destroying states for "
+			    "%d.%d.%d.%d", IP_VAARGS(ip));
+		hash_remove_sk(states, ip, myfree);
+	}
+}
+
+static void
+state_callout(void *p)
+{
+	struct state_callout_args *a;
+
+	a = (struct state_callout_args *)p;
+	set_state(a->ip, a->state, a->set, a->janitor);
+	myfree(a);
 }
 
 /*
@@ -203,47 +248,47 @@ runcallout(void *p)
 static char **
 expand(int argc, char **argv, const char *ip, const struct janitor *j)
 {
-	faststring *str;
+	faststring str = FASTSTRING_INITIALIZER;
 	char *p;
 	char *countstr;
 	char **res, **rp;
 
 	res = mymalloc(argc * sizeof (*argv), "argv array");
 	for (rp = res; *argv != NULL; argv++, rp++) {
-		str = faststring_alloc(32);
+		faststring_alloc(&str, 32);
 		p = *argv;
 		while (*p != '\0') {
 			if (*p != '%') {
-				faststring_strncat(str, p++, 1);
+				faststring_strncat(&str, p++, 1);
 				continue;
 			}
 			p++;
 			switch (*p) {
 			case '\0':
-				faststring_strcat(str, "%");
-				*rp = faststring_export(str);
+				faststring_strcat(&str, "%");
+				*rp = faststring_export(&str);
 				continue;
 			case '%':
-				faststring_strcat(str, "%");
+				faststring_strcat(&str, "%");
 				break;
 			case 'h':
-				faststring_strcat(str, ip);
+				faststring_strcat(&str, ip);
 				break;
 			case 'n':
 				(void)asprintf(&countstr, "%u", j->usecount);
 				if (countstr == NULL)
 					e(2, j, "Command string expansion");
-				faststring_strcat(str, countstr);
+				faststring_strcat(&str, countstr);
 				myfree(countstr);
 				break;
 			default:
-				faststring_strcat(str, "%");
-				faststring_strncat(str, p, 1);
+				faststring_strcat(&str, "%");
+				faststring_strncat(&str, p, 1);
 				break;
 			}
 			p++;
 		}
-		*rp = faststring_export(str);
+		*rp = faststring_export(&str);
 	 }
 	 *rp = NULL;
 	 return res;
@@ -283,7 +328,7 @@ static void
 tick()
 {
 	struct task *prevtp, *tp;
-	struct janitor *jp;
+	struct janitor *j;
 	int slot;
 	int i;
 
@@ -299,6 +344,8 @@ tick()
 	LIST_FOREACH(tp, &timeout_wheel[slot], ticklist) {
 		if (tp->tick > curtick)
 			break;
+		if (tp->janitor->verbose & VERBOSE_TASK)
+			verb(tp->janitor, "[task] callout at tick %u", curtick);
 		prevtp = tp;
 		i++;
 	}
@@ -311,18 +358,18 @@ tick()
 	/*
 	 * Rotate janitor's usage wheel.
 	 */
-	SLIST_FOREACH(jp, &janitors, next) {
-		slot = curtick % jp->uswheelsz;
+	SLIST_FOREACH(j, &janitors, next) {
+		slot = curtick % j->uswheelsz;
 
-		jp->uscur -= jp->uswheel[slot];
-		jp->uswheel[slot] = 0;
+		j->uscur -= j->uswheel[slot];
+		j->uswheel[slot] = 0;
 	}
 
 }
 
 /*
  * Tend the incoming connection:
- *     - Check max usage;
+ *     - Check max usage and required state;
  *     - Handle dup requests;
  *     - Update usage wheel;
  *     - Perform immediate actions and schedule delayed actions.
@@ -335,11 +382,12 @@ tend(struct janitor *janitor)
 	int i, slot, error;
 	char buf[1], ipstr[NI_MAXHOST];
 	uint32_t ip;
-	char **argv;
 	struct action *action;
-	struct ushashbucket *ushbucket;
+	struct hashbucket *hb;
 	struct task *task;
-	uint16_t hval;
+	struct taskqueue *taskq;
+	struct action_callout_args *aca;
+	struct state_callout_args *sca;
 #ifdef SNOOP
 	const u_char *pkt;
 	struct in_addr inaddr;
@@ -347,8 +395,12 @@ tend(struct janitor *janitor)
 #endif
 
 	/* Shutdown warnings. */
+	i = 0;
 	ip = 0;
-	ushbucket = NULL;
+	hb = NULL;
+	taskq = NULL;
+	aca = NULL;
+	sca = NULL;
 
 	/*
 	 * Get IP address.
@@ -403,7 +455,9 @@ tend(struct janitor *janitor)
 	}
 
 	/*
-	 * Check usage wheel and usage hash for dup requests.
+	 * Check usage wheel and ip2tasks mapping for dup requests.
+	 * XXX Note that for reset janitors, clients with pending tasks
+	 * should be able to bypass max usage and required state.
 	 */
 	sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
 	if (janitor->uscur == janitor->usmax) {
@@ -412,30 +466,34 @@ tend(struct janitor *janitor)
 		return;
 	}
 
+	if (janitor->reqstate >= 0) {
+		if (check_state(ip, janitor->reqstate) == 0) {
+			ix(janitor, "Missing required state for request from %s",
+			    ipstr);
+			return;
+		}
+	} else if (janitor->verbose & DEBUG_STATE)
+		verb(janitor, "[debugstate] no state required");
+
 	switch (janitor->dup) {
 	case DUP_EXEC:
-		ushbucket = NULL;
+		assert(janitor->ip2tasks == NULL);
+		hb = NULL;
 		break;
 
 	case DUP_IGNORE:
 	case DUP_RESET:
-		hval = hash(ipstr);
-		slot = hval % janitor->ushashsz;
+		assert(janitor->ip2tasks != NULL);
+		hb = hash_get_sk(janitor->ip2tasks, ip);
 
-		LIST_FOREACH(ushbucket, &janitor->ushash[slot], slotlist)
-			if (ushbucket->ip == ip)
-				break;
-
-		if (ushbucket == NULL) {
-			ushbucket = mymalloc(sizeof (*ushbucket),
-			    "usage hash bucket");
-			ushbucket->ip = ip;
-			ushbucket->hash = hval;
-			TAILQ_INIT(&ushbucket->tasks);
-			LIST_INSERT_HEAD(&janitor->ushash[slot], ushbucket,
-			    slotlist);
+		if (hb == NULL) {
+			taskq = mymalloc(sizeof (*taskq), "taskqueue");
+			TAILQ_INIT(taskq);
+			hash_add_sk(janitor->ip2tasks, ip, taskq);
 			break;
 		}
+
+		/* There were remaining pending actions for this IP. */
 
 		if (janitor->dup == DUP_IGNORE) {
 			ix(janitor, "Ignore duplicate request from %s", ipstr);
@@ -444,7 +502,8 @@ tend(struct janitor *janitor)
 		}
 		/* janitor->dup == DUP_RESET */
 		ix(janitor, "Resetting after duplicate request from %s", ipstr);
-		TAILQ_FOREACH(task, &ushbucket->tasks, siblinglist) {
+		taskq = hashbucket_get_val(hb);
+		TAILQ_FOREACH(task, taskq, siblinglist) {
 			LIST_REMOVE(task, ticklist);
 			schedule(task);
 		}
@@ -463,25 +522,53 @@ tend(struct janitor *janitor)
 
 	/* Perform and schedule actions.  */
 	SLIST_FOREACH(action, &janitor->actions, next) {
-		argv = expand(action->argc, action->argv, ipstr, janitor);
-		if (action->timeout == 0)
-			runcallout(argv);
-		else {
+		if (action->type == ACTION) {
+			aca = mymalloc(sizeof (*aca),
+			    "struct action_callout_args");
+			aca->argv = expand(action->u.a.argc, action->u.a.argv,
+			    ipstr, janitor);
+			aca->janitor = janitor;
+		}
+		else if (action->type == STATE) {
+			sca = mymalloc(sizeof (*sca),
+			    "struct state_callout_args");
+			sca->ip = ip;
+			sca->state = action->u.s.state;
+			sca->set = action->u.s.set;
+			sca->janitor = janitor;
+		}
+
+		if (action->timeout == 0) {
+			if (janitor->verbose & VERBOSE_TASK)
+				verb(janitor, "[task] immediate callout "
+				    "at tick %u", curtick);
+
+			if (action->type == ACTION)
+				action_callout(aca);
+			else if (action->type == STATE)
+				state_callout(sca);
+		} else {
 			task = mymalloc(sizeof (*task), "struct task");
-			task->ushashbucket = ushbucket;
+			task->bucket = hb;
 			task->janitor = janitor;
 			task->tick = 0;
 			task->timeout = action->timeout + 1;
-			task->func = runcallout;
-			task->arg = argv;
+			if (action->type == ACTION) {
+				task->func = action_callout;
+				task->arg = aca;
+			} else if (action->type == STATE) {
+				task->func = state_callout;
+				task->arg = sca;
+			}
 
 			/*
-			 * Insert in usage hash.
+			 * Insert in ip2tasks mapping.
 			 */
-			if (ushbucket != NULL)
-				/* Actions sorted by timeout janitor. */
-				TAILQ_INSERT_TAIL(&ushbucket->tasks, task,
-				    siblinglist);
+			if (hb != NULL) {
+				/* Actions are sorted by timeout in janitor. */
+				assert(taskq != NULL);
+				TAILQ_INSERT_TAIL(taskq, task, siblinglist);
+			}
 
 			schedule(task);
 		}
@@ -497,10 +584,11 @@ main(int ac, char *av[])
 	const char *configfile, *pidfile;
 	char **ap;
 	struct sigaction sa;
-	struct janitor *jp, *tmpjp;
-	struct task *tp, *tmptp;
-	struct action *action, *tmpaction;
-	int opt, jcount, i, s, fdmax, slot;
+	struct janitor *j, *j_;
+	struct task *t, *t_;
+	struct taskqueue *tq;
+	struct action *a, *a_;
+	int opt, i, s, fdmax;
 	struct addrinfo *ai;
 	fd_set fds_, fds;
 	FILE *pidfh;
@@ -523,6 +611,7 @@ main(int ac, char *av[])
 		case 'd':
 			debug = 1;
 			setDebug();
+			exitOnError();
 			break;
 		case 'E':
 			show_conf_example();
@@ -567,60 +656,62 @@ main(int ac, char *av[])
 	if (sigaction(SIGCHLD, &sa, NULL) == -1)
 		e(2, NULL, "sigaction");
 
-	jcount = read_conf(configfile, &janitors);
+	read_conf(configfile, &janitors, &confinfo);
+	if (confinfo.nstates > 0)
+		states = hash_create(confinfo.usmaxtotal); /* XXX: Better value? */
 
 	fdmax = 0;
-	SLIST_FOREACH(jp, &janitors, next) {
-		switch (jp->type) {
+	SLIST_FOREACH(j, &janitors, next) {
+		switch (j->type) {
 		case LISTENING_JANITOR:
-			ai = jp->u.listen.addrinfo;
+			ai = j->u.listen.addrinfo;
 			s = socket(ai->ai_family, ai->ai_socktype,
 			    ai->ai_protocol);
 			if (s == -1)
-				e(2, jp, "socket");
-			if (!strcmp(jp->u.listen.proto, "tcp")) {
+				e(2, j, "socket");
+			if (!strcmp(j->u.listen.proto, "tcp")) {
 				i = 1;
 				if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &i,
 				    sizeof (i)) == -1)
-					e(2, jp, "setsockopt");
+					e(2, j, "setsockopt");
 			}
 			if (bind(s, ai->ai_addr, ai->ai_addrlen) == -1)
-				e(2, jp, "bind");
-			if (!strcmp(jp->u.listen.proto, "tcp"))
+				e(2, j, "bind");
+			if (!strcmp(j->u.listen.proto, "tcp"))
 				if (listen(s, 5) == -1)
-					e(2, jp, "listen");
-			jp->sock = s;
+					e(2, j, "listen");
+			j->sock = s;
 			break;
 #ifdef SNOOP
 		case SNOOPING_JANITOR:
-			pcapp = pcap_open_live(jp->u.snoop.iface, 1518, 0, 50,
+			pcapp = pcap_open_live(j->u.snoop.iface, 1518, 0, 50,
 			    pcaperr);
 			if (pcapp == NULL)
-				ex(2, jp, "pcap_open_live(%s): %s",
-				    jp->u.snoop.iface, pcaperr);
+				ex(2, j, "pcap_open_live(%s): %s",
+				    j->u.snoop.iface, pcaperr);
 			if (pcap_datalink(pcapp) != DLT_EN10MB)
-				ex(2, jp, "%s is not ethernet",
-				    jp->u.snoop.iface);
-			if (-1 == pcap_compile(pcapp, &jp->u.snoop.bpfpg,
-			    jp->u.snoop.filter, 0, 0))
-				ex(2, jp, "Couldn't compile BPF filter: %s",
-				    jp->u.snoop.filter);
-			if (-1 == pcap_setfilter(pcapp, &jp->u.snoop.bpfpg))
-				ex(2, jp, "pcap_setfilter: %s",
+				ex(2, j, "%s is not ethernet",
+				    j->u.snoop.iface);
+			if (-1 == pcap_compile(pcapp, &j->u.snoop.bpfpg,
+			    j->u.snoop.filter, 0, 0))
+				ex(2, j, "Couldn't compile BPF filter: %s",
+				    j->u.snoop.filter);
+			if (-1 == pcap_setfilter(pcapp, &j->u.snoop.bpfpg))
+				ex(2, j, "pcap_setfilter: %s",
 				    pcap_geterr(pcapp));
 			if (-1 == pcap_setdirection(pcapp, PCAP_D_IN))
-				ex(2, jp, "pcap_setdirection: %s", pcaperr);
+				ex(2, j, "pcap_setdirection: %s", pcaperr);
 			/*
 			if (-1 == pcap_setnonblock(pcapp, 1, pcaperr))
 				errx(2, "pcap_setnonblock: %s", pcaperr);
 			*/
-			jp->u.snoop.pcap = pcapp;
-			jp->sock = pcap_get_selectable_fd(pcapp);
+			j->u.snoop.pcap = pcapp;
+			j->sock = pcap_get_selectable_fd(pcapp);
 			break;
 #endif
 		}
-		if (jp->sock > fdmax)
-			fdmax = jp->sock;
+		if (j->sock > fdmax)
+			fdmax = j->sock;
 	}
 
 	sigemptyset(&alrm_sigset);
@@ -642,7 +733,7 @@ main(int ac, char *av[])
 		e(2, NULL, "Cannot open '%s'", pidfile);
 	if (debug == 0) {
 		daemon(1, 0);
-		daemonized = 1;
+		exitOnError();
 	}
 	i = snprintf(pid, sizeof (pid), "%li\n", (long int)getpid());
 	fputs(pid, pidfh);
@@ -656,29 +747,29 @@ main(int ac, char *av[])
 
 	/* Main loop. */
 	FD_ZERO(&fds_);
-	SLIST_FOREACH(jp, &janitors, next)
-		FD_SET(jp->sock, &fds_);
+	SLIST_FOREACH(j, &janitors, next) {
+		verb(j, "sock: %d", j->sock);
+		FD_SET(j->sock, &fds_);
+	}
 
 	while (!mustquit) {
 		/* Handle callouts. */
 		sigprocmask(SIG_BLOCK, &alrm_sigset, NULL);
-		LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
-			(*tp->func)(tp->arg);
+		LIST_FOREACH_SAFE(t, &tasks_todo, ticklist, t_) {
+			(*t->func)(t->arg);
 			
-			jp = tp->janitor;
+			j = t->janitor;
 			/* Remove task from usage hash once performed. */
-			if (jp->dup == DUP_IGNORE || jp->dup == DUP_RESET) {
-				TAILQ_REMOVE(&tp->ushashbucket->tasks, tp,
-				    siblinglist);
-				if (TAILQ_EMPTY(&tp->ushashbucket->tasks)) {
-					slot = tp->ushashbucket->hash %
-					    jp->ushashsz;
-					LIST_REMOVE(tp->ushashbucket, slotlist);
-					myfree(tp->ushashbucket);
-				}
+			if (j->dup == DUP_IGNORE || j->dup == DUP_RESET) {
+				assert(t->bucket != NULL);
+				tq = hashbucket_get_val(t->bucket);
+				TAILQ_REMOVE(tq, t, siblinglist);
+				if (TAILQ_EMPTY(tq))
+					hashbucket_remove(j->ip2tasks, t->bucket,
+					    &myfree);
 			}
 
-			myfree(tp);
+			myfree(t);
 		}
 		LIST_INIT(&tasks_todo);
 		sigprocmask(SIG_UNBLOCK, &alrm_sigset, NULL);
@@ -690,62 +781,65 @@ main(int ac, char *av[])
 				continue;
 			e(2, NULL, "select");
 		}
-		SLIST_FOREACH(jp, &janitors, next) {
-			if (FD_ISSET(jp->sock, &fds))
-				tend(jp);
+		SLIST_FOREACH(j, &janitors, next) {
+			if (FD_ISSET(j->sock, &fds))
+				tend(j);
 		}
 	}
 
 	alarm(0);
 	nx(NULL, "Exiting");
-	LIST_FOREACH_SAFE(tp, &tasks_todo, ticklist, tmptp) {
-		myfree(tp->ushashbucket);
-		myfree(tp->arg);
-		myfree(tp);
+	/*
+	LIST_FOREACH_SAFE(t, &tasks_todo, ticklist, tmptp) {
+		myfree(t->ushashbucket);
+		myfree(t->arg);
+		myfree(t);
 	}
 	for (i = 0; i < TIMEOUT_WHEEL_SIZE; i++) {
-		LIST_FOREACH_SAFE(tp, &timeout_wheel[i], ticklist, tmptp) {
-			myfree(tp->ushashbucket);
-			myfree(tp->arg);
-			myfree(tp);
+		LIST_FOREACH_SAFE(t, &timeout_wheel[i], ticklist, tmptp) {
+			myfree(t->ushashbucket);
+			myfree(t->arg);
+			myfree(t);
 		}
 	}
-	SLIST_FOREACH_SAFE(jp, &janitors, next, tmpjp) {
-		switch (jp->type) {
+	*/
+	SLIST_FOREACH_SAFE(j, &janitors, next, j_) {
+		switch (j->type) {
 		case LISTENING_JANITOR:
-			myfree(jp->u.listen.ip);
-			myfree(jp->u.listen.port);
-			myfree(jp->u.listen.proto);
-			myfree(jp->u.listen.addrinfo);
-			shutdown(jp->sock, SHUT_RDWR);
-			close(jp->sock);
+			myfree(j->u.listen.ip);
+			myfree(j->u.listen.port);
+			myfree(j->u.listen.proto);
+			myfree(j->u.listen.addrinfo);
+			shutdown(j->sock, SHUT_RDWR);
+			close(j->sock);
 			break;
 #ifdef SNOOP
 		case SNOOPING_JANITOR:
-			myfree(jp->u.snoop.iface);
-			myfree(jp->u.snoop.filter);
-			pcap_close(jp->u.snoop.pcap);
+			myfree(j->u.snoop.iface);
+			myfree(j->u.snoop.filter);
+			pcap_close(j->u.snoop.pcap);
 			break;
 #endif
 		}
-		SLIST_FOREACH_SAFE(action, &jp->actions, next, tmpaction) {
-			for (ap = action->argv; *ap != NULL; ap++)
-				myfree(*ap);
-			myfree(action->argv);
-			myfree(action);
+		SLIST_FOREACH_SAFE(a, &j->actions, next, a_) {
+			if (a->type == ACTION)
+				for (ap = a->u.a.argv; *ap != NULL; ap++)
+					myfree(*ap);
+			myfree(a->u.a.argv);
+			myfree(a);
 		}
 		/*
 		 * No need to free hash buckets and tasks from hash,
-		 * they've been above.
+		 * we did it above.
 		 */
-		myfree(jp->ushash);
+		hash_destroy(j->ip2tasks, myfree);
 		/*
 		 * TODO: 
 		 * for (i = 0; i < janitor->ushashsz; i++)
 		 *     LIST_FOREACH_SAFE(&janitor->ushash[])
 		 *         free
 		 */
-		myfree(jp);
+		myfree(j);
 	}
 	exit(0);
 }
