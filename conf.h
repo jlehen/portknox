@@ -23,18 +23,17 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: conf.h,v 1.14 2010/11/10 07:36:49 jlh Exp $
+ * $Id: conf.h,v 1.15 2011/03/29 20:25:24 jlh Exp $
  */
 
 #ifndef _CONF_H_
 #define _CONF_H_
 #include "freebsdqueue.h"
+#include "hash.h"
 
 #ifdef SNOOP
 #include <pcap.h>
 #endif
-
-struct ushashbucket;
 
 /*
  * Pending task for a janitor.
@@ -42,11 +41,11 @@ struct ushashbucket;
 struct task {
 	/* Used in timeout wheel. */
 	LIST_ENTRY(task) ticklist;
-	/* Used in usage hash bucket. */
+	/* Used in IP to tasks mapping. */
 	TAILQ_ENTRY(task) siblinglist;
 
-	/* Hash bucket the task belongs to. */
-	struct ushashbucket *ushashbucket;
+	/* ip2tasks mapping's bucket the task belongs to. */
+	struct hashbucket *bucket;
 	/* Janitor the task relates to. */
 	struct janitor *janitor;
 
@@ -60,19 +59,7 @@ struct task {
 
 LIST_HEAD(tasklist, task);
 
-
-/*
- * Usage hash bucket, mapping IP to tasks.
- * Not use or even allocated if dup == DUP_EXEC.
- */
-struct ushashbucket {
-	LIST_ENTRY(ushashbucket) slotlist;
-	uint32_t ip;
-	uint16_t hash;
-	TAILQ_HEAD(, task) tasks;
-};
-
-LIST_HEAD(ushashslot, ushashbucket);
+TAILQ_HEAD(taskqueue, task);
 
 
 /*
@@ -81,8 +68,23 @@ LIST_HEAD(ushashslot, ushashbucket);
 struct action {
 	SLIST_ENTRY(action) next;
 	int timeout;
-	char **argv;
-	int argc;
+
+	enum {
+		ACTION = 1,
+		STATE = 2
+	} type;
+
+	union {
+		struct {
+			char **argv;
+			int argc;
+		} a;	/* ACTION */
+		struct {
+			int state;
+			int set;
+		} s;	/* STATE */
+
+	} u;
 };
 
 SLIST_HEAD(actionlist, action);
@@ -102,7 +104,21 @@ struct janitor {
 #ifdef SNOOP
 		SNOOPING_JANITOR
 #endif
-	} type;
+	} type:1;
+
+	/* Behaviour on duplicate request. */
+	enum {
+		DUP_EXEC,		/* Execute anyway */
+		DUP_IGNORE,		/* Ignore the request */
+		DUP_RESET		/* Reset pending tasks timeouts */
+	} dup:2;
+
+#define	VERBOSE_TASK	    0x1
+#define	VERBOSE_STATE	    0x2
+#define	VERBOSE_ACTION	    0x4
+#define	VERBOSE_CONF        0x8
+#define	DEBUG_STATE	    0x10
+	int verbose:5;
 
 	union {
 		struct {
@@ -124,16 +140,11 @@ struct janitor {
 	struct actionlist actions;
 	unsigned usecount;		/* Number of janitor use so far */
 
-	/* Behaviour on duplicate request. */
-	enum {
-		DUP_EXEC,		/* Execute anyway */
-		DUP_IGNORE,		/* Ignore the request */
-		DUP_RESET		/* Reset pending tasks timeouts */
-	} dup;
+	/* -1 or required state */
+	int reqstate;
 
-	/* Usage hash. */
-	int ushashsz;
-	struct ushashslot *ushash;
+	/* IP to tasks mapping. */
+	struct hash *ip2tasks;
 
 	/* Usage wheel. */
 	int *uswheel;
@@ -144,7 +155,13 @@ struct janitor {
 
 SLIST_HEAD(janitorlist, janitor);
 
-extern int read_conf(const char *, struct janitorlist *);
+struct confinfo {
+	int nstates;
+	int njanitors;
+	int usmaxtotal;
+};
+
+extern void read_conf(const char *, struct janitorlist *, struct confinfo *);
 extern void show_conf_syntax();
 extern void show_conf_example();
 
