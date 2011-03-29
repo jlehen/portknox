@@ -50,14 +50,57 @@
 #include "conf.h"
 #include "faststring.h"
 #include "freebsdqueue.h"
+#include "hash.h"
 #include "util.h"
+#include "log.h"
 #ifdef SNOOP
 #include <pcap.h>
 #endif
 
+#define	FS_OK(fs)   FASTSTRING_VALID(fs)
+
 static int id;
 static int linecount;
 static const char *filename;
+static int nstates;
+static int usmaxtotal;
+
+struct state {
+	SLIST_ENTRY(state) next;
+	int id;
+	faststring name;
+};
+
+static SLIST_HEAD(statelist, state) statelist =
+    SLIST_HEAD_INITIALIZER(statelist);
+
+static int
+declare_state(faststring *name)
+{
+	struct state *s, *prev;
+	int c;
+
+	prev = NULL;
+	SLIST_FOREACH(s, &statelist, next) {
+		c = strcmp(faststring_peek(name), faststring_peek(&s->name));
+		if (c == 0)
+			return s->id;
+		if (c > 0)
+			break;
+		prev = s;
+	}
+	s = mymalloc(sizeof (*s), "state entry");
+	s->id = nstates++;
+	FASTSTRING_INIT(&s->name);
+	faststring_strdup(&s->name, faststring_peek(name));
+	ix(NULL, "State \"%s\" has id %d", faststring_peek(&s->name), s->id);
+	if (prev)
+		SLIST_INSERT_AFTER(prev, s, next);
+	else
+		SLIST_INSERT_HEAD(&statelist, s, next);
+	return s->id;
+}
+
 
 #define	JANITOR_SYNTAX							\
 "EBNF:\n"								\
@@ -153,38 +196,53 @@ fill_addrinfo(struct janitor *janitor)
 }
 
 static void
-get_word(faststring **fs, const char **p)
+insert_action(struct janitor *janitor, struct action *action)
+{
+	struct action *actp;
+
+	/* Sort list by timeout. */
+	actp = SLIST_FIRST(&janitor->actions);
+	if (SLIST_EMPTY(&janitor->actions) ||
+	    action->timeout < actp->timeout)
+		SLIST_INSERT_HEAD(&janitor->actions, action, next);
+	else {
+		while (SLIST_NEXT(actp, next) != NULL &&
+		    action->timeout > SLIST_NEXT(actp, next)->timeout)
+			actp = SLIST_NEXT(actp, next);
+
+		SLIST_INSERT_AFTER(actp, action, next);
+	}
+}
+
+static void
+get_word(faststring *fs, const char **p)
 {
 	int len;
 
 	EAT_BLANKS(*p);
 	len = (int)strspn(*p, "abcdefghijklmnopqrstuvwxyz");
-	if (*fs != NULL) {
-		faststring_free(*fs);
-		*fs = NULL;
-	}
+	if (FS_OK(fs))
+		faststring_free(fs);
 	if (len == 0)
 		return;
-	*fs = faststring_alloc(len + 1);
-	faststring_strncpy(*fs, *p, len);
+	faststring_alloc(fs, len + 1);
+	faststring_strncpy(fs, *p, len);
 	*p += len;
 }
 
 static void
-get_number(faststring **fs, const char **p)
+get_number(faststring *fs, const char **p)
 {
 	int len;
 
 	EAT_BLANKS(*p);
 	len = (int) strspn(*p, "0123456789");
-	if (*fs != NULL) {
-		faststring_free(*fs);
-		*fs = NULL;
-	}
+	if (FS_OK(fs))
+		faststring_free(fs);
 	if (len == 0)
 		return;
-	*fs = faststring_alloc(len + 1);
-	faststring_strncpy(*fs, *p, len);
+	faststring_alloc(fs, len + 1);
+	faststring_strncpy(fs, *p, len);
 	*p += len;
 }
 
@@ -206,20 +264,19 @@ get_punct(const char **p, int which)
 static int
 parse_timespan(const char **lpp, const char *what)
 {
-	faststring *num;
-	faststring *unit;
+	faststring num = FASTSTRING_INITIALIZER;
+	faststring unit = FASTSTRING_INITIALIZER;
 	long n;
 	char u;
 
-	num = unit = NULL;
 	get_number(&num, lpp);
-	if (num == NULL)
+	if (!FS_OK(&num))
 		syntaxerr(1, "Expecting number for %s: %s", what, *lpp);
 	get_word(&unit, lpp);
-	if (unit == NULL || faststring_strlen(unit) > 1)
+	if (!FS_OK(&num) || faststring_strlen(&unit) > 1)
 		syntaxerr(1, "Expecting interval unit for %s: %s", what,
-		    unit == NULL ? *lpp : faststring_peek(unit));
-	u = faststring_peek(unit)[0];
+		    FS_OK(&num) ? faststring_peek(&unit) : *lpp);
+	u = faststring_peek(&unit)[0];
 	switch (u) {
 	case 's': case 'm': case 'h': case 'd': case 'w':
 		break;
@@ -227,7 +284,7 @@ parse_timespan(const char **lpp, const char *what)
 		syntaxerr(1, "Bad interval unit for %s: %c", what, u);
 	}
 
-	n = strtol(faststring_peek(num), NULL, 10);
+	n = strtol(faststring_peek(&num), NULL, 10);
 	if ((n == 0 && errno == EINVAL) || n < 0 ||
 	    (n == LONG_MAX && errno == ERANGE))
 		syntaxerr(1, "Bad <integer> for interval for %s: %s",
@@ -243,8 +300,8 @@ parse_timespan(const char **lpp, const char *what)
 	case 'm':
 		n *= 60;
 	}
-	faststring_free(num);
-	faststring_free(unit);
+	faststring_free(&num);
+	faststring_free(&unit);
 
 	return (int)n;
 }
@@ -252,7 +309,7 @@ parse_timespan(const char **lpp, const char *what)
 static void
 parse_rate(struct janitor *janitor, const char **lpp)
 {
-	faststring *max;
+	faststring max = FASTSTRING_INITIALIZER;
 	long m;
 	int i;
 
@@ -260,15 +317,15 @@ parse_rate(struct janitor *janitor, const char **lpp)
 		syntaxerr(1, "Max rate property cannot be specified more than "
 		    "once: %s", lpp);
 
-	max = NULL;
 	get_number(&max, lpp);
-	if (max == NULL)
+	if (!FS_OK(&max))
 		syntaxerr(1, "Expecting interger <max> for rate: %s", *lpp);
-	m = strtol(faststring_peek(max), NULL, 10);
+	m = strtol(faststring_peek(&max), NULL, 10);
 	if ((m == 0 && errno == EINVAL) || m < 0 ||
 	    (m == LONG_MAX && errno == ERANGE))
 		syntaxerr(1, "Bad <max> value for rate: %s", *lpp);
 	janitor->usmax = m;
+	usmaxtotal += m;
 
 	if (-1 == get_punct(lpp, '/'))
 		syntaxerr(1, "Expecting '/' for rate: %s", *lpp);
@@ -284,33 +341,32 @@ parse_rate(struct janitor *janitor, const char **lpp)
 		janitor->uswheel[i] = 0;
 	janitor->uscur = 0;
 
-	faststring_free(max);
+	faststring_free(&max);
 }
 
 
 static void
 read_property(struct janitor *janitor, const char *lp)
 {
-	faststring *word;
-	struct action *action, *actp;
+	faststring word = FASTSTRING_INITIALIZER;
+	struct action *action;
 	const char *lp0;
 	char *cmd, *sp, **argv, **ap;
-	int timeout, prime, arraysz;
+	int start, end, i, arraysz;
 
 	lp0 = lp;
-	word = NULL;
 	get_word(&word, &lp);
-	if (word == NULL)
+	if (!FS_OK(&word))
 		syntaxerr(1, "Expecting property name: %s", lp);
 
 	/* action at */
-	if (!strcmp(faststring_peek(word), "action")) {
+	if (!strcmp(faststring_peek(&word), "action")) {
 		get_word(&word, &lp);
-		if (word == NULL || strcmp(faststring_peek(word), "at"))
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "at"))
 			syntaxerr(1, "Expecting \"at\" after word \"action\": "
-			    "%s", word == NULL ? lp : faststring_peek(word));
+			    "%s", FS_OK(&word) ? faststring_peek(&word) : lp);
 
-		timeout = parse_timespan(&lp, "action");
+		start = parse_timespan(&lp, "action");
 
 		if (-1 == get_punct(&lp, ':'))
 			syntaxerr(1, "Expecting ':' after \"action at "
@@ -318,14 +374,15 @@ read_property(struct janitor *janitor, const char *lp)
 
 		EAT_BLANKS(lp);
 		action = mymalloc(sizeof (*action), "struct action");
-		action->timeout = timeout;
+		action->timeout = start;
+		action->type = ACTION;
 		SLIST_NEXT(action, next) = NULL;
 		/* Split action command-line. */
 		cmd = mystrdup(lp, "command");
 		arraysz = 16;
 		ap = argv = mymalloc(arraysz * sizeof (*argv), "argument list");
 		while (cmd != NULL) {
-			sp = strsep(&cmd, " ");
+			sp = strsep(&cmd, " \t");
 			if (*sp == '\0')
 				continue;
 			*ap++ = sp;
@@ -336,28 +393,80 @@ read_property(struct janitor *janitor, const char *lp)
 			}
 		}
 		*ap = NULL;
-		action->argv = argv;
-		action->argc = ap - argv + 1;
+		action->u.a.argv = argv;
+		action->u.a.argc = ap - argv + 1;
 
-		/* Sort list by timeout. */
-		actp = SLIST_FIRST(&janitor->actions);
-		if (SLIST_EMPTY(&janitor->actions) ||
-		    action->timeout < actp->timeout)
-			SLIST_INSERT_HEAD(&janitor->actions, action, next);
-		else {
-			while (SLIST_NEXT(actp, next) != NULL &&
-			    action->timeout > SLIST_NEXT(actp, next)->timeout)
-				actp = SLIST_NEXT(actp, next);
+		insert_action(janitor, action);
+	}
 
-			SLIST_INSERT_AFTER(actp, action, next);
-		}
+	/* state span */
+	else if (!strcmp(faststring_peek(&word), "state")) {
+		get_word(&word, &lp);
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "span"))
+			syntaxerr(1, "Expecting \"span\" after word \"state\": "
+			    "%s", FS_OK(&word) ? faststring_peek(&word) : lp);
+		get_word(&word, &lp);
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "from"))
+			syntaxerr(1, "Expecting \"from\" after word \"span\": "
+			    "%s", FS_OK(&word) ? faststring_peek(&word) : lp);
+
+		start = parse_timespan(&lp, "state");
+
+		get_word(&word, &lp);
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "to"))
+			syntaxerr(1, "Expecting \"to\" after start time: "
+			    "%s", FS_OK(&word) ? faststring_peek(&word) : lp);
+
+		end = parse_timespan(&lp, "state");
+
+		if (-1 == get_punct(&lp, ':'))
+			syntaxerr(1, "Expecting ':' after \"state span from "
+			    "<interval> to <interval>\": %s", lp);
+
+		EAT_BLANKS(lp);
+		faststring_free(&word);
+		faststring_strdup(&word, lp);
+		(void)strtok(faststring_peek(&word), " \t");
+		i = declare_state(&word);
+
+		action = mymalloc(sizeof (*action), "struct action");
+		action->timeout = start;
+		action->type = STATE;
+		action->u.s.state = i;
+		action->u.s.set = 1;
+		insert_action(janitor, action);
+
+		action = mymalloc(sizeof (*action), "struct action");
+		action->timeout = end;
+		action->type = STATE;
+		action->u.s.state = i;
+		action->u.s.set = 0;
+		insert_action(janitor, action);
+
+	/* require state */
+	} else if (!strcmp(faststring_peek(&word), "require")) {
+		get_word(&word, &lp);
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "state"))
+			syntaxerr(1, "Expecting \"state\" after word "
+			    "\"require\": %s",
+			    FS_OK(&word) ? faststring_peek(&word) : lp);
+
+		if (-1 == get_punct(&lp, ':'))
+			syntaxerr(1, "Expecting ':' after \"require state\": "
+			    "%s", lp);
+
+		EAT_BLANKS(lp);
+		faststring_free(&word);
+		faststring_strdup(&word, lp);
+		(void)strtok(faststring_peek(&word), " \t");
+		janitor->reqstate = declare_state(&word);
 
 	/* max rate */
-	} else if (!strcmp(faststring_peek(word), "max")) {
+	} else if (!strcmp(faststring_peek(&word), "max")) {
 		get_word(&word, &lp);
-		if (word == NULL || strcmp(faststring_peek(word), "rate"))
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "rate"))
 			syntaxerr(1, "Expecting \"rate\" after word \"max\": "
-			    "%s", word == NULL ? lp : faststring_peek(word));
+			    "%s", FS_OK(&word) ? faststring_peek(&word) : lp);
 
 		if (-1 == get_punct(&lp, ':'))
 			syntaxerr(1, "Expecting ':' after \"max rate\": %s",
@@ -366,43 +475,63 @@ read_property(struct janitor *janitor, const char *lp)
 		parse_rate(janitor, &lp);
 
 	/* on dup */
-	} else if (!strcmp(faststring_peek(word), "on")) {
+	} else if (!strcmp(faststring_peek(&word), "on")) {
 		get_word(&word, &lp);
-		if (word == NULL || strcmp(faststring_peek(word), "dup"))
+		if (!FS_OK(&word) || strcmp(faststring_peek(&word), "dup"))
 			syntaxerr(1, "Expecting \"dup\" after word \"on\": %s",
-			    word == NULL ? lp : faststring_peek(word));
+			    FS_OK(&word) ? faststring_peek(&word) : lp);
 
 		if (-1 == get_punct(&lp, ':'))
 			syntaxerr(1, "Expected ':' after \"on dup\": %s", lp);
 
 		get_word(&word, &lp);
-		if (word == NULL)
+		if (!FS_OK(&word))
 			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
 			    "\"reset\" after \"on dup:\": %s", lp);
-		if (!strcmp(faststring_peek(word), "exec"))
+		if (!strcmp(faststring_peek(&word), "exec"))
 			janitor->dup = DUP_EXEC;
-		else if (!strcmp(faststring_peek(word), "ignore"))
+		else if (!strcmp(faststring_peek(&word), "ignore"))
 			janitor->dup = DUP_IGNORE;
-		else if (!strcmp(faststring_peek(word), "reset"))
+		else if (!strcmp(faststring_peek(&word), "reset"))
 			janitor->dup = DUP_RESET;
 		else
 			syntaxerr(1, "Expecting \"exec\", \"ignore\" or "
 			    "\"reset\" after \"on dup:\": %s",
-			    faststring_peek(word));
+			    faststring_peek(&word));
 
-		if (janitor->dup == DUP_IGNORE || janitor->dup == DUP_RESET) {
-			prime = choose_prime(janitor->uswheelsz *
-			    janitor->usmax / 10);
-			janitor->ushashsz = prime;
-			janitor->ushash = mymalloc(prime *
-			    sizeof (struct ushashslot), "usage hash slot");
-			for (prime--; prime >= 0; prime--)
-				LIST_INIT(&janitor->ushash[prime]);
+		if (janitor->dup == DUP_IGNORE || janitor->dup == DUP_RESET)
+			janitor->ip2tasks = hash_create(janitor->usmax / 4);
+
+	/* verbose */
+	} else if (!strcmp(faststring_peek(&word), "verbose")) {
+		if (-1 == get_punct(&lp, ':'))
+			syntaxerr(1, "Expected ':' after \"verbose\": %s", lp);
+
+		while (1) {
+			get_word(&word, &lp);
+			if (!FS_OK(&word)) {
+				/* XXX Final faststring_free() won't fail. */
+				faststring_strdup(&word, "");
+				break;
+			}
+			if (!strcmp(faststring_peek(&word), "task"))
+				janitor->verbose |= VERBOSE_TASK;
+			else if (!strcmp(faststring_peek(&word), "state"))
+				janitor->verbose |= VERBOSE_STATE;
+			else if (!strcmp(faststring_peek(&word), "action"))
+				janitor->verbose |= VERBOSE_ACTION;
+			else if (!strcmp(faststring_peek(&word), "conf"))
+				janitor->verbose |= VERBOSE_CONF;
+			else if (!strcmp(faststring_peek(&word), "debugstate"))
+				janitor->verbose |= DEBUG_STATE;
+			else
+				syntaxerr(1, "Expecting \"task\" after \"verbose:\": %s",
+				    faststring_peek(&word));
 		}
 	} else
 		syntaxerr(1, "Unexpected property name: %s", lp0);
 
-	faststring_free(word);
+	faststring_free(&word);
 }
 
 static void
@@ -431,9 +560,6 @@ read_listen_on(struct janitor *janitor, char *lp)
 	janitor->u.listen.proto = mystrdup(lp, "prototype");
 
 	fill_addrinfo(janitor);
-	syslog(LOG_NOTICE, "(janitor %d) Listening on %s:%s/%s",
-	    janitor->id, janitor->u.listen.ip, janitor->u.listen.port,
-	    janitor->u.listen.proto);
 }
 
 #ifdef SNOOP
@@ -469,18 +595,16 @@ read_snoop_on(struct janitor *janitor, char *lp)
 		syntaxerr(1, "Bad BPF filter: %s", pcap_geterr(pcapp));
 	pcap_freecode(&janitor->u.snoop.bpfpg);
 	pcap_close(pcapp);
-	syslog(LOG_NOTICE, "(janitor %d) Snooping on %s (%s)",
-	    janitor->id, janitor->u.snoop.iface, janitor->u.snoop.filter);
 }
 #endif
 
-int
-read_conf(const char *file, struct janitorlist *jlist)
+void
+read_conf(const char *file, struct janitorlist *jlist, struct confinfo *ci)
 {
 	FILE *f;
-	char line[1024];
+	char line[1024], statebuf[16], *ondup;
 	char *lp;
-	faststring *word;
+	faststring word = FASTSTRING_INITIALIZER;
 	struct janitor *janitor, *jp;
 	int jcount;
 
@@ -493,7 +617,6 @@ read_conf(const char *file, struct janitorlist *jlist)
 	id = 0;
 	linecount = 0;
 	jcount = 0;
-	word = NULL;
 	while (1) {
 		linecount++;
 		if (fgets(line, sizeof (line), f) == NULL) {
@@ -534,41 +657,40 @@ read_conf(const char *file, struct janitorlist *jlist)
 		SLIST_NEXT(janitor, next) = NULL;
 		janitor->id = id++;
 		janitor->line = linecount;
+		janitor->verbose = 0;
 		janitor->usecount = 0;
+		janitor->reqstate = -1;
 		janitor->dup = DUP_EXEC;
-		janitor->ushashsz = 0;
-		janitor->ushash = NULL;
+		janitor->ip2tasks = NULL;
 		janitor->uswheelsz = 0;
 		janitor->usmax = 0;
 		janitor->uscur = 0;
 		jcount++;
 
 		get_word(&word, (const char **)&lp);
-		if (word == NULL)
+		if (!FS_OK(&word))
 			syntaxerr(1, "Expecting 'listen': %s", lp);
-		if (!strcmp(faststring_peek(word), "listen")) {
+		if (!strcmp(faststring_peek(&word), "listen")) {
 			get_word(&word, (const char **)&lp);
-			if (word == NULL || strcmp(faststring_peek(word), "on"))
+			if (!FS_OK(&word) || strcmp(faststring_peek(&word), "on"))
 				syntaxerr(1, "Expecting \"on\" after word "
 				    "\"listen\": %s",
-				    word == NULL ? lp : faststring_peek(word));
-			faststring_free(word);
+				    FS_OK(&word) ? faststring_peek(&word) : lp);
 		
 			read_listen_on(janitor, lp);
 #ifdef SNOOP
-		} else if (!strcmp(faststring_peek(word), "snoop")) {
+		} else if (!strcmp(faststring_peek(&word), "snoop")) {
 			get_word(&word, (const char **)&lp);
-			if (word == NULL || strcmp(faststring_peek(word), "on"))
+			if (!FS_OK(&word) || strcmp(faststring_peek(&word), "on"))
 				syntaxerr(1, "Expecting \"on\" after word "
 				    "\"snoop\": %s",
-				    word == NULL ? lp : faststring_peek(word));
-			faststring_free(word);
+				    FS_OK(&word) ? faststring_peek(&word) : lp);
 
 			read_snoop_on(janitor, lp);
 #endif
 		} else
 			syntaxerr(1, "Unknown keyword: %s",
-			   faststring_peek(word));
+			   faststring_peek(&word));
 
 		if (SLIST_EMPTY(jlist)) {
 			SLIST_INSERT_HEAD(jlist, janitor, next);
@@ -579,8 +701,63 @@ read_conf(const char *file, struct janitorlist *jlist)
 			jp = SLIST_NEXT(jp, next);
 		SLIST_INSERT_AFTER(jp, janitor, next);
 	}
+	faststring_free(&word);
 	fclose(f);
-	return jcount;
+	ci->nstates = nstates;
+	ci->njanitors = jcount;
+	ci->usmaxtotal = usmaxtotal;
+
+	SLIST_FOREACH(janitor, jlist, next) {
+		switch (janitor->type) {
+		case LISTENING_JANITOR:
+			nx(janitor, "Listening on %s:%s/%s",
+			    janitor->u.listen.ip, janitor->u.listen.port,
+			    janitor->u.listen.proto);
+			break;
+#ifdef SNOOP
+		case SNOOPING_JANITOR:
+			nx(janitor, "Snooping on %s (%s)",
+		 	    janitor->u.snoop.iface, janitor->u.snoop.filter);
+			break;
+#endif
+		}
+		if ((janitor->verbose & VERBOSE_CONF) == 0)
+			continue;
+
+		if (janitor->reqstate < 0)
+			snprintf(statebuf, sizeof (statebuf), "none");
+		else
+			snprintf(statebuf, sizeof (statebuf), "%d",
+			    janitor->reqstate);
+		switch (janitor->dup) {
+		case DUP_EXEC:
+			ondup = "exec";
+			break;
+		case DUP_IGNORE:
+			ondup = "ignore";
+			break;
+		case DUP_RESET:
+			ondup = "reset";
+			break;
+		}
+		line[0] = '\0';
+		if (janitor->verbose) {
+			if (janitor->verbose & VERBOSE_TASK)
+				strcat(line, " task");
+			if (janitor->verbose & VERBOSE_STATE)
+				strcat(line, " state");
+			if (janitor->verbose & VERBOSE_ACTION)
+				strcat(line, " action");
+			if (janitor->verbose & VERBOSE_CONF)
+				strcat(line, " conf");
+			if (janitor->verbose & DEBUG_STATE)
+				strcat(line, " debugstate");
+		} else
+			strcat(line, " -");
+		verb(janitor, "max usage: %d/%ds; "
+		    "on dup: %s; require state: %s; verbose:%s",
+		    janitor->usmax, janitor->uswheelsz, ondup, statebuf, line);
+	}
 }
 
 void
