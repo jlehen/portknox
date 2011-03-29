@@ -23,14 +23,37 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: log.h,v 1.2 2009/07/07 21:30:45 jlh Exp $
+ * $Id: log.h,v 1.3 2011/03/29 21:08:19 jlh Exp $
  */
 
 #ifndef _LOG_H_
 #define _LOG_H_
 
 void setDebug();
+void exitOnError();
 void setLogFacility(const char *s);
 void openLog(const char *basename);
+void mylog(int status, int prio, const struct janitor *j, const char *errstr,
+    const char *fmt, ...);
+
+#define	e(s, j, fmt, ...)	\
+    mylog(s, LOG_ERR, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	ex(s, j, fmt, ...)	\
+    mylog(s, LOG_ERR, j, NULL, fmt, ## __VA_ARGS__)
+#define	w(j, fmt, ...)		\
+    mylog(-1, LOG_WARNING, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	wx(j, fmt, ...)		\
+    mylog(-1, LOG_WARNING, j, NULL, fmt, ## __VA_ARGS__)
+#define n(j, fmt, ...)		\
+    mylog(-1, LOG_NOTICE, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	nx(j, fmt, ...)		\
+    mylog(-1, LOG_NOTICE, j, NULL, fmt, ## __VA_ARGS__)
+#define	i(j, fmt, ...)		\
+    mylog(-1, LOG_INFO, j, strerror(errno), fmt, ## __VA_ARGS__)
+#define	ix(j, fmt, ...)		\
+    mylog(-1, LOG_INFO, j, NULL, fmt, ## __VA_ARGS__)
+#define verb(j, fmt, ...)	\
+    mylog(-1, LOG_INFO, j, NULL, fmt, ## __VA_ARGS__)
+
 
 #endif /* !_LOG_H_ */

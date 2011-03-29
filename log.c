@@ -23,12 +23,15 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: log.c,v 1.3 2010/11/10 14:23:58 jlh Exp $
+ * $Id: log.c,v 1.4 2011/03/29 21:08:19 jlh Exp $
  */
 
 #include <err.h>
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 #include <syslog.h>
+#include "conf.h"
 
 #ifndef LOG_SECURITY
 # define LOG_SECURITY LOG_DAEMON
@@ -54,6 +57,7 @@ static struct facility {
 };
 
 static int debug = 0;
+static int canexit = 0;
 static int facility = LOG_DAEMON;
 
 void
@@ -63,6 +67,12 @@ setDebug()
 	debug = LOG_PERROR;
 }
 
+void
+exitOnError()
+{
+
+	canexit = 1;
+}
 
 void
 setLogFacility(const char *s)
@@ -82,4 +92,39 @@ openLog(const char *basename)
 {
 
 	openlog(basename, debug | LOG_PID, facility);
+}
+
+void
+mylog(int status, int prio, const struct janitor *j, const char *errstr,
+    const char *fmt, ...)
+{
+    va_list ap;
+    int i;
+    char errbuf[256];	/* Should be enough */
+    static int warns = 0;
+
+    va_start(ap, fmt);
+    i = vsnprintf(errbuf, sizeof (errbuf), fmt, ap);
+    va_end(ap);
+    if (j != NULL && errstr != NULL)
+	    syslog(prio, "(janitor %d) %s: %s", j->id, errbuf, errstr);
+    else if (j != NULL && errstr == NULL)
+	    syslog(prio, "(janitor %d) %s", j->id, errbuf);
+    else if (j == NULL && errstr != NULL)
+	    syslog(prio, "%s: %s", errbuf, errstr);
+    else /* j == NULL && errstr == NULL */
+	    syslog(prio, "%s", errbuf);
+    if (i >= (int)sizeof (errbuf))
+	    syslog(prio, "previous message has been truncated");
+
+    if (canexit || debug) {
+	    if (status >= 0)
+		    exit(status);
+	    return;
+    }
+
+    if (status >= 0)
+	    err(status, "Error occured, check system log");
+    if (warns++ == 0)
+	    warn("Warning occured, check system log");
 }
