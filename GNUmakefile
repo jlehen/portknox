@@ -23,10 +23,10 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-# $Id: GNUmakefile,v 1.4 2009/07/07 21:32:02 jlh Exp $
+# $Id: GNUmakefile,v 1.5 2011/03/29 19:53:00 jlh Exp $
 
 CFLAGS+= -Wall -W -g3
-SRCS= main.c conf.c faststring.c util.c log.c
+SRCS= main.c conf.c hash.c faststring.c util.c log.c
 OBJS= ${SRCS:.c=.o}
 
 ifdef DMALLOC
