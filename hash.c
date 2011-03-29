@@ -23,10 +23,14 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: hash.c,v 1.2 2011/03/13 09:00:30 jlh Exp $
+ * $Id: hash.c,v 1.3 2011/03/29 20:21:50 jlh Exp $
  */
 
+#ifdef __linux__
+#include <linux/stddef.h>
+#else
 #include <sys/stddef.h>
+#endif
 #include <strings.h>
 #include "util.h"
 #include "freebsdqueue.h"
