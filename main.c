@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.41 2011/04/03 21:19:14 jlh Exp $
+ * $Id: main.c,v 1.42 2011/04/03 21:20:48 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -768,8 +768,8 @@ main(int ac, char *av[])
 				tq = hashbucket_get_val(t->bucket);
 				TAILQ_REMOVE(tq, t, siblinglist);
 				if (TAILQ_EMPTY(tq))
-					hashbucket_remove(j->ip2tasks, t->bucket,
-					    &myfree);
+					hashbucket_remove(j->ip2tasks,
+					    t->bucket, &myfree);
 			}
 
 			myfree(t);
