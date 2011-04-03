@@ -23,9 +23,9 @@
 # OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 # SUCH DAMAGE.
 #
-# $Id: BSDmakefile,v 1.5 2011/03/12 18:12:16 jlh Exp $
+# $Id: BSDmakefile,v 1.6 2011/04/03 21:23:30 jlh Exp $
 
-CFLAGS+= -Wall -W -g3 -g
+CFLAGS= -Wall -W -g3 -g
 SRCS= main.c conf.c hash.c faststring.c util.c log.c
 OBJS= ${SRCS:.c=.o}
 
