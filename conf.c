@@ -252,9 +252,9 @@ get_punct(const char **p, int which)
 	int c;
 
 	EAT_BLANKS(*p);
-	if (!ispunct(**p))
-		return -1;
 	c = **p;
+	if (!ispunct(c))
+		return -1;
 	if (which > '\0' && c != which)
 		return -1;
 	(*p)++;
