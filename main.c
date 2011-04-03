@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.38 2011/03/29 21:20:15 jlh Exp $
+ * $Id: main.c,v 1.39 2011/04/03 12:10:29 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -747,10 +747,8 @@ main(int ac, char *av[])
 
 	/* Main loop. */
 	FD_ZERO(&fds_);
-	SLIST_FOREACH(j, &janitors, next) {
-		verb(j, "sock: %d", j->sock);
+	SLIST_FOREACH(j, &janitors, next)
 		FD_SET(j->sock, &fds_);
-	}
 
 	while (!mustquit) {
 		/* Handle callouts. */
