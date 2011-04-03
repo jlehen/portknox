@@ -23,7 +23,7 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: main.c,v 1.39 2011/04/03 12:10:29 jlh Exp $
+ * $Id: main.c,v 1.40 2011/04/03 21:18:44 jlh Exp $
  */
 
 #define	_ISOC99_SOURCE
@@ -490,6 +490,11 @@ tend(struct janitor *janitor)
 			taskq = mymalloc(sizeof (*taskq), "taskqueue");
 			TAILQ_INIT(taskq);
 			hash_add_sk(janitor->ip2tasks, ip, taskq);
+			/*
+			 * Given I often miss it while re-reading the code,
+			 * I hereby note extravagantly that the function is
+			 * continued here.
+			 */
 			break;
 		}
 
