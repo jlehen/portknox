@@ -23,13 +23,13 @@
  * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
  * SUCH DAMAGE.
  *
- * $Id: hash.c,v 1.3 2011/03/29 20:21:50 jlh Exp $
+ * $Id: hash.c,v 1.4 2011/04/03 12:11:00 jlh Exp $
  */
 
 #ifdef __linux__
 #include <linux/stddef.h>
 #else
-#include <sys/stddef.h>
+#include <stddef.h>
 #endif
 #include <strings.h>
 #include "util.h"
