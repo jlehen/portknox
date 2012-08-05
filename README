@@ -1,0 +1,43 @@
+Portknox is a port-knocker built in the Unix philosophy.  It just watches
+for events which then trigger one or more commands, each after a
+configurable time.  It also provides a basic state systems which allow
+you to create a secret port "melody" as a sesame for an action.
+
+Events can be a connection to a TCP port on which portknox listens, or a
+packet that matches a BPF filter.
+
+
+Example (using pf on aa BSD system):
+
+Open your SSH port for 10 minutes (for the originating IP address) only if
+the following melody is done: 443, 25, 25, 443 with a 5 seconds pause
+between the two knocks on port 25 and no more than 10 seconds between each
+knock.
+
+snoop on fxp0 dst host 10.0.0.1 and tcp dst port 443 and tcp[tcpflags] & (tcp-syn|tcp-ack) = tcp-syn
+	verbose: task action state conf
+	max rate: 5/3s
+	on dup: exec
+	state span from 0s to 10s: state1
+
+snoop on fxp0 dst host 10.0.0.1 and tcp dst port 25 and tcp[tcpflags] & (tcp-syn|tcp-ack) = tcp-syn
+	verbose: task action state conf
+	require state: state1
+	max rate: 5/3s
+	on dup: exec
+	state span from 5s to 15s: state2
+
+snoop on fxp0 dst host 10.0.0.1 and tcp dst port 25 and tcp[tcpflags] & (tcp-syn|tcp-ack) = tcp-syn
+	verbose: task action state conf
+	require state: state2
+	max rate: 5/3s
+	on dup: exec
+	state span from 0s to 10s: state3
+
+snoop on fxp0 dst host 10.0.0.1 and tcp dst port 443 and tcp[tcpflags] & (tcp-syn|tcp-ack) = tcp-syn
+	verbose: task action state conf
+	require state: state3
+	max rate: 5/3s
+	on dup: exec
+	action at 0s: /sbin/pfctl -t ssh -T add %h
+	action at 10m: /sbin/pfctl -t ssh -T delete %h
